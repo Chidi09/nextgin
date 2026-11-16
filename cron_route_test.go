@@ -340,6 +340,55 @@ func TestSchedulerRunsAndOverlap(t *testing.T) {
 	})
 }
 
+func TestSchedulerNoDoubleFireOnClockSlew(t *testing.T) {
+	origNow := schedulerNow
+	origNext := schedulerNext
+	t.Cleanup(func() {
+		schedulerNow = origNow
+		schedulerNext = origNext
+	})
+
+	minute := time.Date(2026, 1, 1, 12, 1, 0, 0, time.UTC)
+	var calls atomic.Int32
+	schedulerNow = func() time.Time {
+		if calls.Add(1) <= 2 {
+			return minute.Add(-10 * time.Millisecond)
+		}
+		return minute.Add(-1 * time.Millisecond)
+	}
+	schedulerNext = func(s *Schedule, after time.Time) time.Time { return s.Next(after) }
+
+	app := newTestApp()
+	var runs atomic.Int32
+	firstRun := make(chan struct{})
+	app.Cron("slew", "* * * * *", func(c *gin.Context) {
+		if runs.Add(1) == 1 {
+			close(firstRun)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := app.startScheduler(ctx)
+
+	select {
+	case <-firstRun:
+	case <-time.After(time.Second):
+		cancel()
+		wait(time.Second)
+		t.Fatal("timed out waiting for first cron fire")
+	}
+
+	// Give the loop plenty of time to re-fire if it were vulnerable to 1ms slew.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	wait(time.Second)
+
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("runs = %d, want 1 (same minute fired more than once)", got)
+	}
+}
+
 func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
 	t.Run("export mode", func(t *testing.T) {
 		t.Setenv(ExportEnv, "1")

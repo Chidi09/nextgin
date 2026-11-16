@@ -122,13 +122,18 @@ function buildVercel(flags: Flags) {
       fail('vercel.json is out of date; run nextgin build --target vercel')
     }
     console.log('[nextgin] vercel.json is up to date')
-    return
+  } else {
+    fs.writeFileSync(outPath, content, 'utf8')
+    const nRewrites = cfg.rewrites.length
+    const nCrons = cfg.crons?.length ?? 0
+    console.log(`[nextgin] wrote vercel.json (${nRewrites} rewrites, ${nCrons} crons)`)
   }
 
-  fs.writeFileSync(outPath, content, 'utf8')
-  const nRewrites = cfg.rewrites.length
-  const nCrons = cfg.crons?.length ?? 0
-  console.log(`[nextgin] wrote vercel.json (${nRewrites} rewrites, ${nCrons} crons)`)
+  if ((cfg.crons?.length ?? 0) > 0) {
+    console.log(
+      "[nextgin] note: set CRON_SECRET in the Vercel project's environment variables; nextgin rejects cron requests without it (401)",
+    )
+  }
 }
 
 function buildCloudflare(flags: Flags) {
@@ -199,7 +204,9 @@ function buildCloudflare(flags: Flags) {
   }
 
   if (!noWebBuild) {
-    run('npx', ['opennextjs-cloudflare', 'build'], {}, webAbs)
+    // The Next build must see the target, or createNextGinAdapter() would load
+    // the selfhost adapter inside OpenNext's next build.
+    run('npx', ['opennextjs-cloudflare', 'build'], { NEXTGIN_TARGET: 'cloudflare' }, webAbs)
   }
 
   console.log('[nextgin] cloudflare build complete')

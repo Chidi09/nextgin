@@ -23,7 +23,7 @@ globalThis.tryCatch = (fn) => {
 
 function getBinding(env, ctx) {
   if (instance === undefined) {
-    instance = (async () => {
+    const boot = (async () => {
       if (mod === undefined) {
         mod = await loadModule();
       }
@@ -39,13 +39,22 @@ function getBinding(env, ctx) {
           ready: () => ready(),
         },
       });
-      go.run(inst, createRuntimeContext({ env, ctx, binding }));
+      const runPromise = go.run(inst, createRuntimeContext({ env, ctx, binding }));
+      const reset = () => {
+        if (instance === boot) {
+          instance = undefined;
+        }
+      };
+      runPromise.then(reset, reset);
       await readyPromise;
       return binding;
     })().catch((err) => {
-      instance = undefined;
+      if (instance === boot) {
+        instance = undefined;
+      }
       throw err;
     });
+    instance = boot;
   }
   return instance;
 }

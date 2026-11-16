@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Chidi09/nextgin"
 	"github.com/gin-gonic/gin"
@@ -70,8 +71,15 @@ func main() {
 	}
 
 	todos := newStore()
+	var heartbeats atomic.Int64
+	app.Cron("heartbeat", "* * * * *", func(c *gin.Context) {
+		heartbeats.Add(1)
+		c.Status(http.StatusNoContent)
+	})
+
 	api := app.Router.Group("/api")
 	api.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	api.GET("/heartbeat", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": heartbeats.Load()}) })
 	api.GET("/todos", func(c *gin.Context) { c.JSON(http.StatusOK, todos.list()) })
 	api.POST("/todos", func(c *gin.Context) {
 		var body struct {

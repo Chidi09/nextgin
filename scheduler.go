@@ -27,10 +27,14 @@ func (a *App) startScheduler(ctx context.Context) func(timeout time.Duration) {
 		go func(job CronJob) {
 			defer wg.Done()
 			var running atomic.Bool
+			var last time.Time
 
 			for {
-				now := schedulerNow()
-				next := schedulerNext(job.Schedule, now)
+				base := schedulerNow()
+				if last.After(base) {
+					base = last
+				}
+				next := schedulerNext(job.Schedule, base)
 				if next.IsZero() {
 					log.Warn("nextgin: cron schedule has no upcoming run", "name", job.Name)
 					return
@@ -47,6 +51,7 @@ func (a *App) startScheduler(ctx context.Context) func(timeout time.Duration) {
 					return
 				case <-timer.C:
 				}
+				last = next
 
 				if !running.CompareAndSwap(false, true) {
 					log.Warn("nextgin: cron run skipped, previous run still executing", "name", job.Name)

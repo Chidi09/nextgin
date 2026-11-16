@@ -190,8 +190,13 @@ test('cf-backend-worker.mjs template uses persistent binding and omits per-event
     'runScheduler',
     'handleQueueMessageBatch',
     'v0.36.0',
+    'go.run(',
   ]) {
     assert.ok(content.includes(needle), `expected template to include ${needle}`)
   }
   assert.equal(content.includes('await run('), false)
+  assert.ok(
+    content.split('instance = undefined').length - 1 >= 2,
+    'expected template to reset instance on exit and boot failure',
+  )
 })
