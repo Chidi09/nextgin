@@ -172,13 +172,23 @@ Project layout for multi-target apps: a root with `web/` (Next.js) and
 `backend/` (Go module with `main.go`). Never name a directory `api/`
 (Vercel treats it as legacy functions).
 
-- `vercel`: run export; write root `vercel.json` with `services`
-  (`web`: root `web/`, framework `nextjs`, binding to `backend` injected as
-  `NEXTGIN_INTERNAL_URL`; `backend`: root `backend/`, framework `go`),
-  `rewrites` (each first path segment of exported routes and
-  `/_nextgin/(.*)` → backend; `/(.*)` → web) and `crons`. `--check` fails
-  if the committed file differs. `--vercel-hobby` fails the build when any
-  job has `runsPerDayMax > 1`.
+- `vercel`: run export; write root `vercel.json` (Vercel Services, beta;
+  schema verified against vercel.com/docs/services, /routing, /bindings):
+  - `services.web = {"root": "web/", "framework": "nextjs", "bindings":
+    [{"type": "service", "service": "backend", "format": "url", "env":
+    "NEXTGIN_INTERNAL_URL"}]}` — bindings are declared by the caller; Go
+    services cannot declare bindings, but Next calling Go is the direction
+    we need.
+  - `services.backend = {"root": "backend/"}` — no `framework` key: Vercel
+    docs list no Go slug; the runtime is auto-detected from go.mod/main.go.
+  - `rewrites`, in order: `/<prefix>/:path*` → `{"service": "backend"}` for
+    each distinct static first path segment of exported routes; then
+    `/_nextgin/:path*` → backend; then `/(.*)` → `{"service": "web"}`.
+    Services receive the original path; routing into a service is final
+    (no fall-through), so a prefix belongs wholly to Go.
+  - `crons`: `{"path", "schedule"}` per exported job.
+  `--check` fails if the committed file differs. `--vercel-hobby` fails the
+  build when any job has `runsPerDayMax > 1`.
 - `cloudflare`: OpenNext build of `web/`; `GOOS=js GOARCH=wasm` build of
   `backend/` + glue patch (§5); generated wrangler configs with the backend
   service binding and Cron Triggers from `cloudflare` expressions.
