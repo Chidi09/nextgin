@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.nextgin/
+dist/
+*.sock
+/examples/*/server
+/examples/*/fullstack-app
+/examples/*/server
+.wrangler/
+.vercel/
+.open-next/

@@ -1,0 +1,12 @@
+{
+  "name": "nextgin-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @nextgin/adapter",
+    "test": "go test ./... && npm test -w @nextgin/adapter"
+  }
+}
