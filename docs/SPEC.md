@@ -242,9 +242,38 @@ sees `VERCEL=1` (vercel target, no scheduler); a cron-shaped request
 (GET + `Authorization: Bearer $CRON_SECRET`) through the router runs the
 job, a wrong secret is 401.
 
-Unverified (must stay labelled in docs until deploy-tested): Vercel's
-production cron invoker reaching a service path (`vercel dev` does not run
-`vercel.json` crons) and production builds/deploys of both targets. Also: a Vercel Go build must be able to fetch
+Deploy-tested (2026-11-16, scratch app = the example, both targets, then
+torn down):
+
+- Vercel (Hobby, `vercel deploy --prod`): the remote Go build fetched the
+  private `github.com/Chidi09/nextgin` with `GIT_CREDENTIALS` passed as a
+  build-only env (`--build-env`), plus `GOPRIVATE`. Production URL: Go API,
+  SSR + Server Action via the binding, proxy.ts, headers, cron route 401
+  without / 204 with `CRON_SECRET`. First request 6.0 s (cold); warm Go API
+  p50 ~90 ms above a static asset from the same client. Hobby rejects the
+  deploy outright for any sub-daily cron (`--vercel-hobby` catches it first).
+- Cloudflare (Workers Paid): `wrangler deploy` backend then web. Upload
+  42.9 MB (8.8 MB gzip), reported startup 3 ms (Go boots on first event).
+  Everything above works through the web worker. Production `event.cron`
+  arrived as exactly `* * * * *` and ran the job in-process (204) — the
+  CloudflareExpr matching assumption holds. Analytics over 79 invocations:
+  CPU p50 3.3 ms, p90 279 ms, p99 552 ms; wall p50 14.6 ms, p99 1.66 s. The
+  tail is Go booting: at low traffic requests spread across many isolates
+  and ~1 in 4 booted a fresh instance (first request 7.0 s). Server Action
+  write and read-back landed in different isolates, so in-memory state is
+  per isolate (expected; see §5).
+
+Open items:
+- Vercel's production cron invoker reaching a service path (pending the
+  scratch deploy's daily cron window).
+- Cloudflare: the backend worker is also public on workers.dev (same Go
+  routes the web worker already forwards; `/_nextgin/*` is auth-protected).
+  Consider `workers_dev: false` once verified that bindings and Cron
+  Triggers still work without it.
+- Gin runs in debug mode unless the app sets `GIN_MODE=release`; consider
+  setting it in generated configs.
+
+Also: a Vercel Go build must be able to fetch
 `github.com/Chidi09/nextgin` (public repo, or GOPRIVATE + token); production
 Cloudflare `event.cron` matching `CloudflareExpr()` byte for byte (a mismatch
 now fails loudly); real cold start and CPU cost of the ~43 MB example wasm.
