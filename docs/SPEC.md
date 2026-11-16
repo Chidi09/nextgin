@@ -266,12 +266,14 @@ torn down):
 Open items:
 - Vercel's production cron invoker reaching a service path (pending the
   scratch deploy's daily cron window).
-- Cloudflare: the backend worker is also public on workers.dev (same Go
-  routes the web worker already forwards; `/_nextgin/*` is auth-protected).
-  Consider `workers_dev: false` once verified that bindings and Cron
-  Triggers still work without it.
-- Gin runs in debug mode unless the app sets `GIN_MODE=release`; consider
-  setting it in generated configs.
+
+Resolved after the first deploy (re-deployed and verified 2026-11-16):
+- The generated backend wrangler.jsonc sets `workers_dev: false` and
+  `preview_urls: false`. Its workers.dev URL returns 404; the web worker's
+  binding (API, SSR via `NEXTGIN_INTERNAL_URL`) and Cron Triggers still work.
+  Note: the first trigger fired ~5 min after the redeploy.
+- vercel/cloudflare targets switch Gin to release mode unless `GIN_MODE` is
+  set; production boot logs no longer show `[GIN-debug]` output.
 
 Also: a Vercel Go build must be able to fetch
 `github.com/Chidi09/nextgin` (public repo, or GOPRIVATE + token); production
