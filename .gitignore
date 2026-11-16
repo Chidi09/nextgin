@@ -9,3 +9,4 @@ dist/
 .wrangler/
 .vercel/
 .open-next/
+.claude/settings.local.json

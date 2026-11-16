@@ -1,0 +1,211 @@
+# nextgin multi-target spec
+
+Status: authoritative for all work on the `multi-target` branch. Dispatch
+instructions cite sections of this file by number (e.g. "SPEC §3.2").
+
+## 1. Goal
+
+One codebase — a Next.js frontend plus a Gin backend with API routes and
+scheduled jobs — deploys to three targets:
+
+| Target | HTTP front door | Next.js | Gin backend | Cron trigger |
+|---|---|---|---|---|
+| `selfhost` (done, v0) | Go | UDS worker pool behind Go | same process | in-process scheduler (§3.4) |
+| `vercel` | Vercel router | Vercel's native Next.js | Vercel Service, `framework: go`, native | `vercel.json` `crons` → cron route |
+| `cloudflare` | Next Worker (OpenNext) | OpenNext Cloudflare | separate Worker, Go→wasm, persistent instance (§5) | Worker Cron Trigger → cron route in-process |
+
+Design rule: **a cron job is a Gin route.** Every target executes a job by
+sending a request through the same Gin engine and middleware chain as API
+traffic. Targets differ only in what triggers that request.
+
+## 2. Build split (hard invariant)
+
+- Files that use the worker pool, `os/exec`, Unix sockets or process
+  signals carry `//go:build !js`. Today: `worker_pool.go`, `sysprocattr_*.go`,
+  and the Frontend/selfhost parts of `nextgin.go` (to be moved into
+  `selfhost.go`, `//go:build !js`).
+- Portable files (no build tag): `manifest.go`, `handler.go`, `cron.go`,
+  `cron_route.go`, `export.go`, `target.go`.
+- Cloudflare runtime: `cloudflare_js.go` with `//go:build js && wasm`.
+- `GOOS=js GOARCH=wasm go build ./...` MUST succeed. It is part of the
+  verification gate (§8).
+
+## 3. Cron jobs (portable core)
+
+### 3.1 Canonical schedule syntax
+
+Exactly 5 space-separated fields, UTC, Vercel-compatible numeric subset:
+
+| Field | Range |
+|---|---|
+| minute | 0–59 |
+| hour | 0–23 |
+| day of month | 1–31 |
+| month | 1–12 |
+| day of week | 0–6 (0 = Sunday) |
+
+Each field is a comma-separated list of items. Allowed item forms: `*`,
+`N`, `N-M`, `*/S`, `N-M/S`. N, M and S are decimal integers. `S >= 1`.
+`N <= M`. All values within the field's range.
+
+Rejected (error at parse time): names (`MON`, `JAN`), `?`, `L`, `W`, `#`,
+`@hourly`-style macros, 6-field (seconds) expressions, empty items, and
+any expression where **both** day-of-month and day-of-week are not `*`
+(Vercel restriction; keeps semantics identical on every platform).
+
+### 3.2 `cron.go` API (portable)
+
+```go
+// Schedule is a parsed canonical cron expression.
+type Schedule struct { /* unexported: sets of allowed values per field */ }
+
+func ParseSchedule(expr string) (*Schedule, error)
+func (s *Schedule) String() string            // canonical input, whitespace-normalized
+func (s *Schedule) Next(after time.Time) time.Time // first matching minute strictly after `after`, UTC, seconds=0
+func (s *Schedule) RunsPerDayMax() int        // len(minutes) * len(hours); >1 means sub-daily
+func (s *Schedule) CloudflareExpr() string    // §3.3
+```
+
+`Next` must terminate for every valid schedule (e.g. `0 0 31 2 *` never
+matches: return the zero `time.Time` after scanning at most 5 years).
+
+### 3.3 Cloudflare translation
+
+Cloudflare day-of-week is 1–7 with 1 = Sunday. `CloudflareExpr()` returns
+the canonical expression with only the day-of-week field rewritten:
+`*` stays `*`; anything else is expanded to the explicit sorted list of
+canonical values, each +1, comma-joined (e.g. `1-5` → `2,3,4,5,6`,
+`*/2` → `1,3,5,7`). Other fields are emitted unchanged.
+
+### 3.4 Registration and routes (`cron_route.go`)
+
+```go
+func (a *App) Cron(name, schedule string, handlers ...gin.HandlerFunc)
+```
+
+- `name` must match `^[a-z0-9][a-z0-9_-]{0,62}$` and be unique; schedule
+  must parse. Violations **panic** at registration (same as Gin route
+  conflicts) with a message naming the job.
+- Registers `GET` and `POST` on `/_nextgin/cron/<name>` with
+  `cronAuth` middleware first, then the user's handlers.
+- `cronAuth` (fail closed): accept iff the `Authorization` header equals
+  `Bearer <token>` (constant-time compare) where token is either the
+  process-internal token (32 random bytes, hex, generated once per
+  process) or the value of env `CRON_SECRET` when that is non-empty.
+  Otherwise `401` with JSON `{"error":"unauthorized"}` and abort.
+- The App keeps an ordered registry of jobs: `{Name, Schedule, Path}`.
+
+### 3.5 Self-host scheduler
+
+Started by `App.Run` on the selfhost target only (never on vercel/cloudflare,
+never in export mode). One goroutine per job:
+
+- Sleep until `Schedule.Next(now)`; then invoke the job by calling
+  `a.Router.ServeHTTP` in-process with a synthetic `POST` request to the
+  job path, header `Authorization: Bearer <internal token>`, header
+  `X-Nextgin-Cron: <name>`, and a context with timeout `Config.CronTimeout`
+  (default 5 minutes).
+- Overlap guard: if the previous run of the same job is still executing
+  when the next fire time arrives, skip that run and log a warning.
+- Log each run at Info with name, status code and duration; status >= 400
+  logs at Error.
+- Stops when Run's context is cancelled (graceful shutdown waits for
+  in-flight job runs up to `ShutdownGrace`).
+
+## 4. Targets and export
+
+### 4.1 Target detection (`target.go`)
+
+`Target()` returns, in order: env `NEXTGIN_TARGET` if set (`selfhost`,
+`vercel`, `cloudflare`; anything else → error at `New`); else `vercel`
+if env `VERCEL == "1"`; else `cloudflare` when built for `js/wasm`; else
+`selfhost`.
+
+Behavior of `New`/`Run` per target:
+
+- `selfhost`: unchanged v0 behavior (workers, frontend) + scheduler (§3.5).
+- `vercel`: no manifest, no workers, no frontend, no scheduler. `Run`
+  listens on `:$PORT` (default `3000`) serving `a.Router` only.
+- `cloudflare`: §5.
+- **Export mode** (env `NEXTGIN_EXPORT=1`, any target): `New` must not read
+  the manifest, start workers or touch disk. `Run` writes the export JSON
+  (§4.2) to stdout and exits the process with status 0.
+
+### 4.2 Export JSON (`export.go`)
+
+```json
+{
+  "version": 1,
+  "routes": [{"method": "GET", "path": "/api/todos"}],
+  "crons": [{"name": "cleanup", "schedule": "*/5 * * * *",
+             "cloudflare": "*/5 * * * *", "path": "/_nextgin/cron/cleanup",
+             "runsPerDayMax": 288}]
+}
+```
+
+`routes` comes from `gin.Engine.Routes()`, excluding `/_nextgin/` paths,
+sorted by path then method. The CLI derives platform config from this
+file; Go code is the single source of truth.
+
+## 5. Cloudflare runtime (option 1: wasm, persistent instance)
+
+Measured (local `wrangler dev`, p50): workers-go default glue boots a new
+Go runtime per request (44.6 ms trivial endpoint vs 12.6 ms plain JS);
+keeping one instance alive gives 13.8 ms. Therefore:
+
+- Go side (`cloudflare_js.go`): `workers.ServeNonBlock(a.Router)`;
+  `cron.ScheduleTaskNonBlock(task)` where `task` reads `cron.NewEvent(ctx)`,
+  looks up every job whose `CloudflareExpr()` equals `event.Cron`, and
+  invokes each in-process exactly as §3.5 does (internal token); then
+  `workers.Ready()` and block forever (`select {}`).
+- JS side: the CLI patches the workers-go generated `build/worker.mjs` so
+  `fetch` and `scheduled` share one lazily created instance (one `run()`
+  promise) instead of calling `run()` per event.
+- Known v1 limitation (document, do not work around): the runtime context
+  (env/ctx) is captured from the first event; `waitUntil` of later events
+  is not wired.
+- Requires the Workers Paid plan in practice (free plan CPU limit 10 ms).
+
+## 6. CLI targets (`nextgin build --target ...`)
+
+Project layout for multi-target apps: a root with `web/` (Next.js) and
+`backend/` (Go module with `main.go`). Never name a directory `api/`
+(Vercel treats it as legacy functions).
+
+- `vercel`: run export; write root `vercel.json` with `services`
+  (`web`: root `web/`, framework `nextjs`, binding to `backend` injected as
+  `NEXTGIN_INTERNAL_URL`; `backend`: root `backend/`, framework `go`),
+  `rewrites` (each first path segment of exported routes and
+  `/_nextgin/(.*)` → backend; `/(.*)` → web) and `crons`. `--check` fails
+  if the committed file differs. `--vercel-hobby` fails the build when any
+  job has `runsPerDayMax > 1`.
+- `cloudflare`: OpenNext build of `web/`; `GOOS=js GOARCH=wasm` build of
+  `backend/` + glue patch (§5); generated wrangler configs with the backend
+  service binding and Cron Triggers from `cloudflare` expressions.
+- The Next adapter is a no-op (returns `undefined`) unless the target is
+  `selfhost`.
+
+Unverified (must stay labelled in docs until deploy-tested): Vercel cron
+paths reaching a service in services mode; deploy behavior of both
+generated configs.
+
+## 7. Known bug to fix first
+
+`worker_pool.go` marks a worker not-ready on any dial error, and only the
+READY line sets it back. A live worker that refuses one connection (full
+listen backlog under load) leaves rotation permanently. Required fix: on a
+dial failure, mark not-ready and start a background re-probe for that
+worker (dial its socket every 100 ms, up to 5 s); on success mark ready
+again; if the probe times out while the process is still running, kill
+the process so the supervisor restarts it.
+
+## 8. Verification gate (run after every dispatch, by the reviewer)
+
+```bash
+gofmt -l .                          # must print nothing
+go vet ./...
+go test -race -count=1 ./...
+GOOS=js GOARCH=wasm go build ./...  # from §2 onward
+(cd packages/adapter && npx tsc -p tsconfig.json && node --test test/)
+npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
+```
