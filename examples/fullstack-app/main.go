@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/gin-gonic/gin"
 	"github.com/Chidi09/nextgin"
+	"github.com/gin-gonic/gin"
 )
 
 type Todo struct {

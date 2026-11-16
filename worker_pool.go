@@ -25,6 +25,11 @@ const ReadyLine = "NEXT_WORKER_READY"
 // maxSocketPath stays under the smallest sun_path limit (104 on macOS/BSD).
 const maxSocketPath = 103
 
+const (
+	reprobeInterval = 100 * time.Millisecond
+	reprobeTimeout  = 5 * time.Second
+)
+
 // PoolConfig configures the worker supervisor.
 type PoolConfig struct {
 	// Runtime is the JS runtime binary: "node" (default) or "bun", or a path.
@@ -69,11 +74,12 @@ type Pool struct {
 }
 
 type worker struct {
-	id    int
-	sock  string
-	proxy *httputil.ReverseProxy
-	tr    *http.Transport
-	ready atomic.Bool
+	id      int
+	sock    string
+	proxy   *httputil.ReverseProxy
+	tr      *http.Transport
+	ready   atomic.Bool
+	probing atomic.Bool
 
 	mu  sync.Mutex
 	cmd *exec.Cmd
@@ -158,9 +164,11 @@ func (p *Pool) newWorker(id int, sock string) *worker {
 			var d net.Dialer
 			c, err := d.DialContext(ctx, "unix", sock)
 			if err != nil && ctx.Err() == nil {
-				// The process died but the supervisor has not reaped it yet:
-				// stop routing to it right away.
+				// The process died or temporarily refused the connection:
+				// stop routing to it right away and probe until it recovers
+				// or times out.
 				w.ready.Store(false)
+				p.startReprobe(w)
 			}
 			return c, err
 		},
@@ -288,7 +296,89 @@ func (p *Pool) runOnce(w *worker, onReady func()) error {
 		p.signalReady()
 		onReady()
 	})
-	return cmd.Wait()
+	err = cmd.Wait()
+	w.mu.Lock()
+	if w.cmd == cmd {
+		w.cmd = nil
+	}
+	w.mu.Unlock()
+	return err
+}
+
+func (p *Pool) startReprobe(w *worker) {
+	if p.closing.Load() || p.ctx.Err() != nil {
+		return
+	}
+	if !w.probing.CompareAndSwap(false, true) {
+		return
+	}
+	go p.reprobe(w)
+}
+
+func (p *Pool) reprobe(w *worker) {
+	defer w.probing.Store(false)
+
+	w.mu.Lock()
+	origCmd := w.cmd
+	w.mu.Unlock()
+	if origCmd == nil {
+		return
+	}
+
+	ticker := time.NewTicker(reprobeInterval)
+	defer ticker.Stop()
+	deadline := time.NewTimer(reprobeTimeout)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-deadline.C:
+			w.mu.Lock()
+			same := w.cmd == origCmd
+			w.mu.Unlock()
+			if same && origCmd.Process != nil && !p.closing.Load() {
+				p.cfg.Logger.Warn("nextgin: worker unresponsive to re-probe; killing", "worker", w.id)
+				_ = origCmd.Process.Kill()
+			}
+			return
+		case <-ticker.C:
+			if p.closing.Load() {
+				return
+			}
+			w.mu.Lock()
+			same := w.cmd == origCmd
+			w.mu.Unlock()
+			if !same {
+				return
+			}
+			if p.probeSocket(w.sock) {
+				w.mu.Lock()
+				same = w.cmd == origCmd && !p.closing.Load()
+				if same {
+					w.ready.Store(true)
+				}
+				w.mu.Unlock()
+				if same {
+					p.signalReady()
+				}
+				return
+			}
+		}
+	}
+}
+
+func (p *Pool) probeSocket(sock string) bool {
+	ctx, cancel := context.WithTimeout(p.ctx, reprobeInterval)
+	defer cancel()
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "unix", sock)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }
 
 // pipeLogs forwards worker output to the logger, firing onReady on ReadyLine.
