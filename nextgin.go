@@ -134,7 +134,7 @@ func (a *App) MountFrontend() {
 // and stops the workers.
 func (a *App) Run(addr string) error {
 	if exportMode() {
-		if err := a.writeExport(os.Stdout); err != nil {
+		if err := a.exportTo(os.Getenv(ExportFileEnv)); err != nil {
 			return err
 		}
 		os.Exit(0)
@@ -155,4 +155,20 @@ func (c Config) loggerOrDefault() *slog.Logger {
 		return c.Logger
 	}
 	return slog.Default()
+}
+
+// exportTo writes the export JSON to path, or to stdout when path is empty.
+func (a *App) exportTo(path string) error {
+	if path == "" {
+		return a.writeExport(os.Stdout)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := a.writeExport(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

@@ -129,7 +129,10 @@ Behavior of `New`/`Run` per target:
 - `cloudflare`: §5.
 - **Export mode** (env `NEXTGIN_EXPORT=1`, any target): `New` must not read
   the manifest, start workers or touch disk. `Run` writes the export JSON
-  (§4.2) to stdout and exits the process with status 0.
+  (§4.2) to the file named by `NEXTGIN_EXPORT_FILE` (stdout when unset) and
+  exits with status 0. The CLI always sets the file: gin prints debug output
+  to stdout before `nextgin.New` runs when the user builds the router
+  themselves, so stdout cannot be trusted to carry only JSON.
 
 ### 4.2 Export JSON (`export.go`)
 
@@ -165,6 +168,14 @@ keeping one instance alive gives 13.8 ms. Therefore:
   (env/ctx) is captured from the first event; `waitUntil` of later events
   is not wired.
 - Requires the Workers Paid plan in practice (free plan CPU limit 10 ms).
+- Measured (local `wrangler dev`, warm, p50 of 60): persistent glue with
+  `gin.Default()` 12.2 ms, with a logger-free `gin.New()` 8.6 ms — gin's
+  per-request logger writes through console.log. The stock workers-go glue
+  cannot serve this runtime at all (the Go side blocks forever by design).
+- Limits that apply (developers.cloudflare.com/workers/platform/limits):
+  64 MiB uncompressed Worker size, no compressed limit; 128 MB memory per
+  isolate; 1 s global-scope startup. The example backend is ~43 MB of wasm
+  (gin 1.12 pulls bson/protobuf render support).
 
 ## 6. CLI targets (`nextgin build --target ...`)
 

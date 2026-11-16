@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -397,5 +398,29 @@ func TestInvokeJobStreamingHandler(t *testing.T) {
 	defer cancel()
 	if st := a.invokeJob(ctx, a.CronJobs()[0]); st != http.StatusOK {
 		t.Fatalf("status = %d, want 200", st)
+	}
+}
+
+// Regression: the CLI reads the export from NEXTGIN_EXPORT_FILE so that stdout
+// noise (gin debug output printed before nextgin.New, user logging) cannot
+// corrupt it.
+func TestExportToFile(t *testing.T) {
+	a := &App{Router: gin.New()}
+	a.Router.GET("/api/x", func(c *gin.Context) {})
+	a.Cron("nightly", "0 3 * * *", func(c *gin.Context) {})
+	path := t.TempDir() + "/export.json"
+	if err := a.exportTo(path); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Export
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("export file is not JSON: %v\n%s", err, b)
+	}
+	if len(got.Routes) != 1 || len(got.Crons) != 1 || got.Crons[0].Name != "nightly" {
+		t.Fatalf("unexpected export: %+v", got)
 	}
 }

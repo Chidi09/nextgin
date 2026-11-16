@@ -24,6 +24,11 @@ const TargetEnv = "NEXTGIN_TARGET"
 // ExportEnv enables export mode when set to "1", printing route and cron metadata as JSON.
 const ExportEnv = "NEXTGIN_EXPORT"
 
+// ExportFileEnv, when set in export mode, names the file the export JSON is
+// written to instead of stdout. The CLI always sets it, so that anything else
+// the program prints (gin debug output, user logging) cannot corrupt the JSON.
+const ExportFileEnv = "NEXTGIN_EXPORT_FILE"
+
 // DetectTarget determines the active deployment target from environment variables
 // and the build platform.
 func DetectTarget() (TargetKind, error) {
