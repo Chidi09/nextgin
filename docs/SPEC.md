@@ -203,8 +203,11 @@ Project layout for multi-target apps: a root with `web/` (Next.js) and
     "NEXTGIN_INTERNAL_URL"}]}` — bindings are declared by the caller; Go
     services cannot declare bindings, but Next calling Go is the direction
     we need.
-  - `services.backend = {"root": "backend/"}` — no `framework` key: Vercel
-    docs list no Go slug; the runtime is auto-detected from go.mod/main.go.
+  - `services.backend = {"root": "backend/", "framework": "go"}` — the
+    `go` slug is not in the docs but is in the CLI's framework table
+    (detectors: go.mod + main.go). It is required: with `root` only,
+    `vercel dev` did not detect the service and the rewrite answered 502
+    "Cannot route to service `backend`: it is not running".
   - `rewrites`, in order: `/<prefix>/:path*` → `{"service": "backend"}` for
     each distinct static first path segment of exported routes; then
     `/_nextgin/:path*` → backend; then `/(.*)` → `{"service": "web"}`.
@@ -230,11 +233,18 @@ service binding, prerendered pages, SSR fetching `NEXTGIN_INTERNAL_URL`,
 proxy.ts, next.config headers/redirects, Suspense streaming, Server Actions
 persisting through Go, Cron Triggers running Go jobs in-process.
 
-Unverified (must stay labelled in docs until deploy-tested): everything on
-Vercel beyond config generation (`vercel dev` requires a logged-in account):
-Services schema acceptance, Go auto-detection for `backend/`, rewrites and
-the binding, `VERCEL=1` reaching the Go process, cron paths reaching a
-service. Also: a Vercel Go build must be able to fetch
+Verified locally (2026-11-16, `vercel dev`, CLI 65.16.0, linked scratch
+project): the generated services config is accepted; both services run;
+Go prefixes and `/_nextgin/*` route to Go, everything else to Next (404s
+from Next); the binding injects `NEXTGIN_INTERNAL_URL` (SSR and Server
+Actions reach Go); proxy.ts and next.config headers run; the Go process
+sees `VERCEL=1` (vercel target, no scheduler); a cron-shaped request
+(GET + `Authorization: Bearer $CRON_SECRET`) through the router runs the
+job, a wrong secret is 401.
+
+Unverified (must stay labelled in docs until deploy-tested): Vercel's
+production cron invoker reaching a service path (`vercel dev` does not run
+`vercel.json` crons) and production builds/deploys of both targets. Also: a Vercel Go build must be able to fetch
 `github.com/Chidi09/nextgin` (public repo, or GOPRIVATE + token); production
 Cloudflare `event.cron` matching `CloudflareExpr()` byte for byte (a mismatch
 now fails loudly); real cold start and CPU cost of the ~43 MB example wasm.

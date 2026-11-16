@@ -21,6 +21,9 @@ export interface VercelConfig {
     }
     backend: {
       root: string
+      // Required: with only `root`, `vercel dev` (CLI 65.16) does not detect the
+      // Go service ("Cannot route to service backend: it is not running").
+      framework: 'go'
     }
   }
   rewrites: Array<{
@@ -91,6 +94,7 @@ export function generateVercelConfig(exp: NextginExport, opts?: VercelOptions): 
       },
       backend: {
         root: backendRoot,
+        framework: 'go',
       },
     },
     rewrites,

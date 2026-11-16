@@ -62,6 +62,7 @@ test('generateVercelConfig builds expected services, sorted rewrites, and crons'
       },
       backend: {
         root: 'backend/',
+        framework: 'go',
       },
     },
     rewrites: [
@@ -103,7 +104,8 @@ test('serializeVercelConfig preserves exact key order and omits crons when empty
       ]
     },
     "backend": {
-      "root": "services/go/"
+      "root": "services/go/",
+      "framework": "go"
     }
   },
   "rewrites": [
