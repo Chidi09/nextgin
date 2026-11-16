@@ -66,6 +66,9 @@ type Config struct {
 	StartupTimeout time.Duration
 	// ShutdownGrace bounds in-flight requests on Close. Default 10s.
 	ShutdownGrace time.Duration
+	// CronTimeout is the per-run timeout for scheduled jobs on the selfhost
+	// target. Default 5m.
+	CronTimeout time.Duration
 	// Env is extra environment for workers ("KEY=value").
 	Env []string
 	// Port is passed to workers as PORT, used by Next.js for self-referencing
@@ -199,6 +202,9 @@ type App struct {
 	Router   *gin.Engine
 	Frontend *Frontend
 	cfg      Config
+	target   TargetKind
+	jobs     []CronJob
+	jobNames map[string]bool
 }
 
 // New creates an App serving the .nextgin output in dir.
@@ -206,37 +212,85 @@ func New(dir string, cfg Config) (*App, error) {
 	if cfg.Port == "" {
 		cfg.Port = os.Getenv("PORT")
 	}
-	f, err := NewFrontend(dir, cfg)
+	target, err := DetectTarget()
 	if err != nil {
 		return nil, err
+	}
+	var f *Frontend
+	if exportMode() {
+		// Export mode inspects Go routes and jobs without touching disk or
+		// booting workers. stdout must carry only the export JSON, so send
+		// gin's debug output (route listing, mode warnings) to stderr.
+		gin.DefaultWriter = os.Stderr
+	} else {
+		switch target {
+		case TargetSelfhost:
+			f, err = NewFrontend(dir, cfg)
+			if err != nil {
+				return nil, err
+			}
+		case TargetVercel:
+			// Vercel serves Next.js natively and routes Go traffic directly to this service.
+		default:
+			return nil, errors.New("nextgin: the cloudflare target requires GOOS=js GOARCH=wasm")
+		}
 	}
 	r := cfg.Router
 	if r == nil {
 		r = gin.Default()
 	}
-	return &App{Router: r, Frontend: f, cfg: cfg}, nil
+	return &App{Router: r, Frontend: f, cfg: cfg, target: target}, nil
 }
 
 // Handler returns the engine-agnostic http.Handler for use with net/http or
 // other routers (e.g. chi: r.NotFound(app.Handler().ServeHTTP)).
-func (a *App) Handler() http.Handler { return a.Frontend }
+func (a *App) Handler() http.Handler {
+	if a.Frontend == nil {
+		return http.NotFoundHandler()
+	}
+	return a.Frontend
+}
 
 // MountFrontend routes every request Gin has no route for to Next.js, so
 // routes you register on Router (e.g. /api/*) always take priority.
 func (a *App) MountFrontend() {
+	if a.Frontend == nil {
+		return
+	}
 	a.Router.NoRoute(gin.WrapH(a.Frontend))
 }
 
 // Run serves on addr until SIGINT/SIGTERM, then drains in-flight requests
 // and stops the workers.
 func (a *App) Run(addr string) error {
+	if exportMode() {
+		if err := a.writeExport(os.Stdout); err != nil {
+			return err
+		}
+		os.Exit(0)
+	}
+
+	if a.target == TargetVercel {
+		if p := os.Getenv("PORT"); p != "" {
+			addr = ":" + p
+		} else if addr == "" {
+			addr = ":3000"
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var waitScheduler func(time.Duration)
+	if a.target == TargetSelfhost {
+		waitScheduler = a.startScheduler(ctx)
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           a.Router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -244,19 +298,27 @@ func (a *App) Run(addr string) error {
 		errCh <- srv.ListenAndServe()
 	}()
 
-	select {
-	case err := <-errCh:
-		_ = a.Close()
-		return err
-	case <-ctx.Done():
-	}
 	grace := a.cfg.ShutdownGrace
 	if grace <= 0 {
 		grace = 10 * time.Second
 	}
+
+	select {
+	case err := <-errCh:
+		stop()
+		if waitScheduler != nil {
+			waitScheduler(grace)
+		}
+		_ = a.Close()
+		return err
+	case <-ctx.Done():
+	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	err := srv.Shutdown(shutCtx)
+	if waitScheduler != nil {
+		waitScheduler(grace)
+	}
 	if cerr := a.Close(); err == nil {
 		err = cerr
 	}
@@ -264,7 +326,12 @@ func (a *App) Run(addr string) error {
 }
 
 // Close stops the Next.js workers.
-func (a *App) Close() error { return a.Frontend.Close() }
+func (a *App) Close() error {
+	if a.Frontend == nil {
+		return nil
+	}
+	return a.Frontend.Close()
+}
 
 func (c Config) loggerOrDefault() *slog.Logger {
 	if c.Logger != nil {

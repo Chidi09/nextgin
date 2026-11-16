@@ -1,0 +1,49 @@
+package nextgin
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+)
+
+// TargetKind identifies the deployment target for a nextgin application.
+type TargetKind string
+
+const (
+	// TargetSelfhost runs Next.js workers behind Go with an in-process cron scheduler.
+	TargetSelfhost TargetKind = "selfhost"
+	// TargetVercel serves Go API routes only; Vercel handles Next.js and cron triggers.
+	TargetVercel TargetKind = "vercel"
+	// TargetCloudflare runs the Go backend as a Cloudflare Worker (js/wasm).
+	TargetCloudflare TargetKind = "cloudflare"
+)
+
+// TargetEnv is the environment variable that explicitly selects the deploy target.
+const TargetEnv = "NEXTGIN_TARGET"
+
+// ExportEnv enables export mode when set to "1", printing route and cron metadata as JSON.
+const ExportEnv = "NEXTGIN_EXPORT"
+
+// DetectTarget determines the active deployment target from environment variables
+// and the build platform.
+func DetectTarget() (TargetKind, error) {
+	if v := os.Getenv(TargetEnv); v != "" {
+		switch TargetKind(v) {
+		case TargetSelfhost, TargetVercel, TargetCloudflare:
+			return TargetKind(v), nil
+		default:
+			return "", fmt.Errorf("nextgin: unknown %s %q", TargetEnv, v)
+		}
+	}
+	if os.Getenv("VERCEL") == "1" {
+		return TargetVercel, nil
+	}
+	if runtime.GOOS == "js" {
+		return TargetCloudflare, nil
+	}
+	return TargetSelfhost, nil
+}
+
+func exportMode() bool {
+	return os.Getenv(ExportEnv) == "1"
+}

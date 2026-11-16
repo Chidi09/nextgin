@@ -4,13 +4,18 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { finalizeServer, readPending } from './finalize.js'
+import { runExport } from './export.js'
+import { detectTarget, type Target } from './targets.js'
+import { generateVercelConfig, serializeVercelConfig } from './vercel.js'
 
 const HELP = `nextgin — Next.js on a Go/Gin front door
 
 Usage:
-  nextgin build [--out-dir .nextgin] [--go-out server] [--no-go]
-      Runs \`next build\` (with @nextgin/adapter), finalizes .nextgin/server and
-      compiles the Go binary from the current directory.
+  nextgin build [--target selfhost|vercel|cloudflare] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby]
+      selfhost (default): runs \`next build\` (with @nextgin/adapter), finalizes
+      .nextgin/server and compiles the Go binary from the current directory.
+      vercel: exports Go routes/crons and writes vercel.json (or verifies it
+      with --check; --vercel-hobby rejects sub-daily crons).
 
   nextgin dev [--port 8080] [--next-port 3001]
       Runs \`next dev\` and the Go server side by side. Go proxies every
@@ -71,7 +76,58 @@ function finalize(outDir: string) {
   }
 }
 
+function resolveTarget(flags: Flags): Target {
+  try {
+    if (flags.target !== undefined) {
+      return detectTarget({ NEXTGIN_TARGET: String(flags.target) })
+    }
+    return detectTarget()
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+}
+
+function buildVercel(flags: Flags) {
+  const webDir = typeof flags.web === 'string' ? flags.web : 'web'
+  const backendDir = typeof flags.backend === 'string' ? flags.backend : 'backend'
+  const hobby = flags['vercel-hobby'] === true
+  const check = flags.check === true
+
+  let cfg: ReturnType<typeof generateVercelConfig>
+  let content: string
+  try {
+    const exp = runExport(path.resolve(cwd, backendDir), 'vercel')
+    cfg = generateVercelConfig(exp, { webDir, backendDir, hobby })
+    content = serializeVercelConfig(cfg)
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+
+  const outPath = path.join(cwd, 'vercel.json')
+  if (check) {
+    if (!fs.existsSync(outPath) || fs.readFileSync(outPath, 'utf8') !== content) {
+      fail('vercel.json is out of date; run nextgin build --target vercel')
+    }
+    console.log('[nextgin] vercel.json is up to date')
+    return
+  }
+
+  fs.writeFileSync(outPath, content, 'utf8')
+  const nRewrites = cfg.rewrites.length
+  const nCrons = cfg.crons?.length ?? 0
+  console.log(`[nextgin] wrote vercel.json (${nRewrites} rewrites, ${nCrons} crons)`)
+}
+
 function build(flags: Flags) {
+  const target = resolveTarget(flags)
+  if (target === 'cloudflare') {
+    fail('the cloudflare target is not implemented yet')
+  }
+  if (target === 'vercel') {
+    buildVercel(flags)
+    return
+  }
+
   const outDir = String(flags['out-dir'] ?? '.nextgin')
   run(process.execPath, [nextBin(), 'build'], {
     NEXTGIN_ADAPTER_OPTIONS: process.env.NEXTGIN_ADAPTER_OPTIONS ?? JSON.stringify({ outDir }),
