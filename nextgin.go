@@ -93,6 +93,7 @@ func New(dir string, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	applyGinMode(target)
 	var f *Frontend
 	if exportMode() {
 		// Export mode inspects Go routes and jobs without touching disk or

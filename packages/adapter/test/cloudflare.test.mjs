@@ -61,14 +61,18 @@ test('generateBackendWrangler deduplicates cloudflare crons in first-seen order'
     ],
   }
 
-  assert.deepStrictEqual(generateBackendWrangler(exp, { name: 'my-app' }), {
+  const cfg = generateBackendWrangler(exp, { name: 'my-app' })
+  assert.deepStrictEqual(cfg, {
     name: 'my-app-backend',
     main: 'build/worker.mjs',
     compatibility_date: CF_COMPAT_DATE,
+    workers_dev: false,
+    preview_urls: false,
     triggers: {
       crons: ['*/5 * * * *', '0 9 * * 2,3,4,5,6'],
     },
   })
+  assert.ok(serializeWrangler(cfg).includes('"workers_dev": false'))
 })
 
 test('generateWebWrangler builds expected service bindings, assets, and vars', () => {

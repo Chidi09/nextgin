@@ -10,6 +10,8 @@ export interface BackendWranglerConfig {
   name: string
   main: string
   compatibility_date: string
+  workers_dev: boolean
+  preview_urls: boolean
   triggers: {
     crons: string[]
   }
@@ -70,6 +72,8 @@ export function generateBackendWrangler(
     name: `${opts.name}-backend`,
     main: 'build/worker.mjs',
     compatibility_date: CF_COMPAT_DATE,
+    workers_dev: false,
+    preview_urls: false,
     triggers: {
       crons,
     },
