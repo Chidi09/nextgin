@@ -1,4 +1,5 @@
 import type { NextginExport } from './export.js'
+import { goPrefixes } from './prefixes.js'
 
 export interface VercelOptions {
   webDir?: string
@@ -50,22 +51,7 @@ export function generateVercelConfig(exp: NextginExport, opts?: VercelOptions): 
   const webRoot = normalizeServiceDir(opts?.webDir ?? 'web', 'webDir')
   const backendRoot = normalizeServiceDir(opts?.backendDir ?? 'backend', 'backendDir')
 
-  const prefixes = new Set<string>()
-  for (const route of exp.routes) {
-    const trimmed = route.path.replace(/^\/+/, '')
-    const first = trimmed.split('/')[0]
-    if (!first || first.startsWith(':') || first.startsWith('*')) {
-      throw new Error(
-        `nextgin: route ${route.method} ${route.path} has no static first segment; Vercel needs a path prefix to route it to Go`,
-      )
-    }
-    if (first === '_next' || first === '_nextgin') {
-      throw new Error(
-        `nextgin: route ${route.method} ${route.path} uses reserved prefix "${first}"`,
-      )
-    }
-    prefixes.add(first)
-  }
+  const sortedPrefixes = goPrefixes(exp)
 
   if (opts?.hobby) {
     const offending = exp.crons.filter((c) => c.runsPerDayMax > 1)
@@ -74,8 +60,6 @@ export function generateVercelConfig(exp: NextginExport, opts?: VercelOptions): 
       throw new Error(`nextgin: Vercel Hobby only allows daily cron jobs; offending jobs: ${list}`)
     }
   }
-
-  const sortedPrefixes = [...prefixes].sort()
   const rewrites: VercelConfig['rewrites'] = [
     ...sortedPrefixes.map((prefix) => ({
       source: `/${prefix}/:path*`,
