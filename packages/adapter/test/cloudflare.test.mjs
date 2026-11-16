@@ -195,8 +195,8 @@ test('cf-backend-worker.mjs template uses persistent binding and omits per-event
     assert.ok(content.includes(needle), `expected template to include ${needle}`)
   }
   assert.equal(content.includes('await run('), false)
-  assert.ok(
-    content.split('instance = undefined').length - 1 >= 2,
-    'expected template to reset instance on exit and boot failure',
-  )
+  assert.ok(content.includes('currentGo.exited'), 'expected template to check currentGo.exited')
+  assert.ok(content.includes('__nextginCronErrors'), 'expected template to read __nextginCronErrors')
+  assert.ok(content.includes('throw new Error(msg)'), 'expected template to throw new Error(msg)')
+  assert.equal(content.includes('runPromise'), false)
 })

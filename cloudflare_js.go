@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"syscall/js"
 	"time"
 
 	"github.com/syumai/workers-go"
@@ -34,30 +34,37 @@ func (a *App) runTarget(_ string) error {
 		}
 
 		jobs := jobsForCloudflareCron(a.CronJobs(), e.Cron)
+		var failed []string
 		if len(jobs) == 0 {
 			log.Warn("nextgin: no cron job matches Cloudflare cron", "cron", e.Cron)
-			return nil
-		}
+		} else {
+			for _, job := range jobs {
+				runCtx, cancel := context.WithTimeout(ctx, timeout)
+				start := time.Now()
+				status := a.invokeJob(runCtx, job)
+				dur := time.Since(start)
+				cancel()
 
-		var failed []string
-		for _, job := range jobs {
-			runCtx, cancel := context.WithTimeout(ctx, timeout)
-			start := time.Now()
-			status := a.invokeJob(runCtx, job)
-			dur := time.Since(start)
-			cancel()
-
-			if status >= 400 {
-				log.Error("nextgin: cron run", "name", job.Name, "status", status, "duration", dur)
-				failed = append(failed, fmt.Sprintf("%s (%d)", job.Name, status))
-			} else {
-				log.Info("nextgin: cron run", "name", job.Name, "status", status, "duration", dur)
+				if status >= 400 {
+					log.Error("nextgin: cron run", "name", job.Name, "status", status, "duration", dur)
+					failed = append(failed, fmt.Sprintf("%s (%d)", job.Name, status))
+				} else {
+					log.Info("nextgin: cron run", "name", job.Name, "status", status, "duration", dur)
+				}
 			}
 		}
 
-		if len(failed) > 0 {
-			return fmt.Errorf("nextgin: cron job(s) failed: %s", strings.Join(failed, ", "))
+		if msg := cronFailure(e.Cron, len(jobs), failed); msg != "" {
+			log.Error("nextgin: cron event failed", "cron", e.Cron, "error", msg)
+			errs := js.Global().Get(cfCronErrorsGlobal)
+			if errs.IsUndefined() {
+				errs = js.Global().Get("Object").New()
+				js.Global().Set(cfCronErrorsGlobal, errs)
+			}
+			errs.Set(e.Cron, msg)
 		}
+		// Never return a non-nil error after cron.NewEvent succeeds: workers-go
+		// panics on task errors, which would kill the persistent Go instance.
 		return nil
 	})
 

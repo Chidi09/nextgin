@@ -56,3 +56,42 @@ func TestJobsForCloudflareCron(t *testing.T) {
 		}
 	})
 }
+
+func TestCronFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		expr    string
+		matched int
+		failed  []string
+		want    string
+	}{
+		{
+			name:    "no matched jobs",
+			expr:    "*/5 * * * *",
+			matched: 0,
+			want:    `nextgin: no cron job matches Cloudflare cron "*/5 * * * *"`,
+		},
+		{
+			name:    "failed jobs",
+			expr:    "0 9 * * 2,3,4,5,6",
+			matched: 2,
+			failed:  []string{"cleanup (500)", "sync (502)"},
+			want:    "nextgin: cron job(s) failed: cleanup (500), sync (502)",
+		},
+		{
+			name:    "all succeeded",
+			expr:    "*/5 * * * *",
+			matched: 2,
+			want:    "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cronFailure(tc.expr, tc.matched, tc.failed)
+			if got != tc.want {
+				t.Fatalf("cronFailure(%q, %d, %v) = %q, want %q", tc.expr, tc.matched, tc.failed, got, tc.want)
+			}
+		})
+	}
+}

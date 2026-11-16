@@ -164,6 +164,19 @@ keeping one instance alive gives 13.8 ms. Therefore:
 - JS side: the CLI patches the workers-go generated `build/worker.mjs` so
   `fetch` and `scheduled` share one lazily created instance (one `run()`
   promise) instead of calling `run()` per event.
+- Failure handling (verified under `wrangler dev`):
+  - workers-go v0.36.0 panics when the scheduled task returns an error, which
+    would kill the persistent instance. The task therefore always returns nil;
+    an unmatched expression or a job answering >= 400 is recorded on
+    `globalThis.__nextginCronErrors[event.cron]` and the glue's `scheduled()`
+    throws it, so Cloudflare reports the invocation as failed while the Go
+    instance keeps serving.
+  - If the Go program exits (unrecovered panic in a goroutine), the glue sees
+    `go.exited` on the next event and boots a fresh instance. Exit cannot be
+    observed through `go.run()`'s promise: workerd does not run continuations
+    of a promise resolved from a different request context.
+  - In-memory Go state does not survive a reboot or isolate eviction; keep
+    durable state in a binding (KV/D1/R2) or an external store.
 - Known v1 limitation (document, do not work around): the runtime context
   (env/ctx) is captured from the first event; `waitUntil` of later events
   is not wired.
@@ -204,11 +217,27 @@ Project layout for multi-target apps: a root with `web/` (Next.js) and
   `backend/` + glue patch (§5); generated wrangler configs with the backend
   service binding and Cron Triggers from `cloudflare` expressions.
 - The Next adapter is a no-op (returns `undefined`) unless the target is
-  `selfhost`.
+  `selfhost`. Vercel builds set `VERCEL=1`; the CLI passes
+  `NEXTGIN_TARGET=cloudflare` to the OpenNext build. Anyone running
+  `opennextjs-cloudflare build` directly must set it too.
+- The web worker forwards only the exported Go prefixes to the backend;
+  `/_nextgin/*` is not publicly routed on Cloudflare (Cron Triggers reach the
+  backend worker directly).
 
-Unverified (must stay labelled in docs until deploy-tested): Vercel cron
-paths reaching a service in services mode; deploy behavior of both
-generated configs.
+Verified locally (2026-11-16): Cloudflare web + backend workers together
+under `wrangler dev` (multi-config) with OpenNext 1.20.17 — Go API via the
+service binding, prerendered pages, SSR fetching `NEXTGIN_INTERNAL_URL`,
+proxy.ts, next.config headers/redirects, Suspense streaming, Server Actions
+persisting through Go, Cron Triggers running Go jobs in-process.
+
+Unverified (must stay labelled in docs until deploy-tested): everything on
+Vercel beyond config generation (`vercel dev` requires a logged-in account):
+Services schema acceptance, Go auto-detection for `backend/`, rewrites and
+the binding, `VERCEL=1` reaching the Go process, cron paths reaching a
+service. Also: a Vercel Go build must be able to fetch
+`github.com/Chidi09/nextgin` (public repo, or GOPRIVATE + token); production
+Cloudflare `event.cron` matching `CloudflareExpr()` byte for byte (a mismatch
+now fails loudly); real cold start and CPU cost of the ~43 MB example wasm.
 
 ## 7. Known bug to fix first
 
