@@ -21,7 +21,7 @@ import { generateVercelConfig, serializeVercelConfig } from './vercel.js'
 const HELP = `nextgin — Next.js on a Go/Gin front door
 
 Usage:
-  nextgin build [--target selfhost|vercel|cloudflare] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby] [--name app] [--no-web-build] [--no-go-build] [--force]
+  nextgin build [--target selfhost|vercel|cloudflare] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby] [--name app] [--no-web-build] [--no-go-build] [--go-tags nomsgpack] [--force]
       selfhost (default): runs \`next build\` (with @nextgin/adapter), finalizes
       .nextgin/server and compiles the Go binary from the current directory.
       vercel: exports Go routes/crons and writes vercel.json (or verifies it
@@ -29,6 +29,7 @@ Usage:
       cloudflare: builds the Go/WASM backend worker and OpenNext web worker,
       generating wrangler.jsonc and nextgin-worker.mjs (--name, --no-web-build,
       --no-go-build, --force).
+      --go-tags <tags>: Go build tags for wasm (default: nomsgpack; --go-tags= for none).
 
   nextgin dev [--port 8080] [--next-port 3001]
       Runs \`next dev\` and the Go server side by side. Go proxies every
@@ -145,6 +146,7 @@ function buildCloudflare(flags: Flags) {
   const force = flags.force === true
   const noGoBuild = flags['go-build'] === false
   const noWebBuild = flags['web-build'] === false
+  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : 'nomsgpack'
 
   let exp: ReturnType<typeof runExport>
   let prefixes: string[]
@@ -159,7 +161,18 @@ function buildCloudflare(flags: Flags) {
 
   if (!noGoBuild) {
     run('go', ['run', 'github.com/syumai/workers-go/cmd/workers-assets-gen', '-mode=go'], {}, backendAbs)
-    run('go', ['build', '-o', 'build/app.wasm', '.'], { GOOS: 'js', GOARCH: 'wasm' }, backendAbs)
+    const goBuildArgs = ['build']
+    if (goTags !== '') goBuildArgs.push('-tags', goTags)
+    goBuildArgs.push('-trimpath', '-ldflags=-s -w', '-o', 'build/app.wasm', '.')
+    run('go', goBuildArgs, { GOOS: 'js', GOARCH: 'wasm' }, backendAbs)
+    const wasmBytes = fs.statSync(path.join(backendAbs, 'build', 'app.wasm')).size
+    const wasmMB = (wasmBytes / 1048576).toFixed(1)
+    console.log(`[nextgin] backend wasm: ${wasmMB} MB (build/app.wasm)`)
+    if (wasmBytes > 20 * 1048576) {
+      console.warn(
+        `[nextgin] warning: backend wasm is ${wasmMB} MB; every new Cloudflare isolate compiles it, so cold starts cost more CPU. Gin's request binding (c.ShouldBind*/c.Bind*) links go-playground/validator and every binding format (~18 MB); use nextgin.BindJSON instead. If you use c.MsgPack or msgpack binding, pass --go-tags= to keep msgpack.`,
+      )
+    }
     const templatePath = fileURLToPath(new URL('../templates/cf-backend-worker.mjs', import.meta.url))
     fs.copyFileSync(templatePath, path.join(backendAbs, 'build', 'worker.mjs'))
   }

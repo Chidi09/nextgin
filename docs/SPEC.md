@@ -187,8 +187,14 @@ keeping one instance alive gives 13.8 ms. Therefore:
   cannot serve this runtime at all (the Go side blocks forever by design).
 - Limits that apply (developers.cloudflare.com/workers/platform/limits):
   64 MiB uncompressed Worker size, no compressed limit; 128 MB memory per
-  isolate; 1 s global-scope startup. The example backend is ~43 MB of wasm
-  (gin 1.12 pulls bson/protobuf render support).
+  isolate; 1 s global-scope startup. See wasm size below.
+- Wasm size (measured on the example): 41.9 MB default; 28.4 MB with -tags
+  nomsgpack; 10.0 MB with nomsgpack, -trimpath -ldflags=-s -w and no gin
+  binding (nextgin.BindJSON). The CLI builds with -tags nomsgpack (override:
+  --go-tags) and warns above 20 MiB. wasm-opt -Oz was measured at a further 8%
+  for 148 s of build time and is not used. Per-isolate cost (V8
+  WebAssembly.compile in Node, median of 5): 107 ms -> 33 ms; whole-process
+  CPU 304 ms -> 122 ms. Production CPU after the change is not yet measured.
 
 ## 6. CLI targets (`nextgin build --target ...`)
 
