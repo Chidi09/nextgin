@@ -12,6 +12,10 @@ export interface BackendWranglerConfig {
   compatibility_date: string
   workers_dev: boolean
   preview_urls: boolean
+  routes?: Array<{
+    pattern: string
+    custom_domain: boolean
+  }>
   triggers: {
     crons: string[]
   }
@@ -57,7 +61,7 @@ export function workerName(raw: string): string {
  */
 export function generateBackendWrangler(
   exp: NextginExport,
-  opts: { name: string },
+  opts: { name: string; customDomain?: string },
 ): BackendWranglerConfig {
   const seen = new Set<string>()
   const crons: string[] = []
@@ -74,6 +78,9 @@ export function generateBackendWrangler(
     compatibility_date: CF_COMPAT_DATE,
     workers_dev: false,
     preview_urls: false,
+    ...(opts.customDomain
+      ? { routes: [{ pattern: opts.customDomain, custom_domain: true }] }
+      : {}),
     triggers: {
       crons,
     },

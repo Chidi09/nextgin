@@ -204,3 +204,32 @@ test('cf-backend-worker.mjs template uses persistent binding and omits per-event
   assert.ok(content.includes('throw new Error(msg)'), 'expected template to throw new Error(msg)')
   assert.equal(content.includes('runPromise'), false)
 })
+
+test('generateBackendWrangler with customDomain adds custom_domain route and keeps workers_dev/preview_urls false', () => {
+  const exp = {
+    version: 1,
+    routes: [{ method: 'GET', path: '/api/ping' }],
+    crons: [
+      {
+        name: 'cleanup',
+        schedule: '*/5 * * * *',
+        cloudflare: '*/5 * * * *',
+        path: '/_nextgin/cron/cleanup',
+        runsPerDayMax: 288,
+      },
+    ],
+  }
+
+  const cfg = generateBackendWrangler(exp, { name: 'my-app', customDomain: 'api.shop.com' })
+  assert.deepStrictEqual(cfg, {
+    name: 'my-app-backend',
+    main: 'build/worker.mjs',
+    compatibility_date: CF_COMPAT_DATE,
+    workers_dev: false,
+    preview_urls: false,
+    routes: [{ pattern: 'api.shop.com', custom_domain: true }],
+    triggers: {
+      crons: ['*/5 * * * *'],
+    },
+  })
+})

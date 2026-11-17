@@ -17,6 +17,13 @@ import {
 } from './cloudflare.js'
 import { detectTarget, type Target } from './targets.js'
 import { generateVercelConfig, serializeVercelConfig } from './vercel.js'
+import {
+  canOverwriteDockerfile,
+  generateDockerfile,
+  generateVercelSplitConfig,
+  parseGoVersion,
+  validateSplitFlags,
+} from './split.js'
 
 const HELP = `nextgin — Next.js on a Go/Gin front door
 
@@ -30,6 +37,11 @@ Usage:
       generating wrangler.jsonc and nextgin-worker.mjs (--name, --no-web-build,
       --no-go-build, --force).
       --go-tags <tags>: Go build tags for wasm (default: nomsgpack; --go-tags= for none).
+
+  nextgin build --web-target vercel --backend-target <cloudflare|container> --backend-url <url> [--api-mode rewrite|direct] [--web web] [--backend backend] [--name app] [--force] [--no-go-build] [--go-tags nomsgpack] [--check]
+      Split topology (Next.js on Vercel, Go backend on its own host; writes <web>/vercel.json):
+      --backend-target cloudflare: builds the Go/WASM worker with custom-domain wrangler.jsonc.
+      --backend-target container: generates <backend>/Dockerfile (api-only backend target).
 
   nextgin dev [--port 8080] [--next-port 3001]
       Runs \`next dev\` and the Go server side by side. Go proxies every
@@ -137,6 +149,24 @@ function buildVercel(flags: Flags) {
   }
 }
 
+function buildCloudflareWasm(backendAbs: string, goTags: string) {
+  run('go', ['run', 'github.com/syumai/workers-go/cmd/workers-assets-gen', '-mode=go'], {}, backendAbs)
+  const goBuildArgs = ['build']
+  if (goTags !== '') goBuildArgs.push('-tags', goTags)
+  goBuildArgs.push('-trimpath', '-ldflags=-s -w', '-o', 'build/app.wasm', '.')
+  run('go', goBuildArgs, { GOOS: 'js', GOARCH: 'wasm' }, backendAbs)
+  const wasmBytes = fs.statSync(path.join(backendAbs, 'build', 'app.wasm')).size
+  const wasmMB = (wasmBytes / 1048576).toFixed(1)
+  console.log(`[nextgin] backend wasm: ${wasmMB} MB (build/app.wasm)`)
+  if (wasmBytes > 20 * 1048576) {
+    console.warn(
+      `[nextgin] warning: backend wasm is ${wasmMB} MB; every new Cloudflare isolate compiles it, so cold starts cost more CPU. Gin's request binding (c.ShouldBind*/c.Bind*) links go-playground/validator and every binding format (~18 MB); use nextgin.BindJSON instead. If you use c.MsgPack or msgpack binding, pass --go-tags= to keep msgpack.`,
+    )
+  }
+  const templatePath = fileURLToPath(new URL('../templates/cf-backend-worker.mjs', import.meta.url))
+  fs.copyFileSync(templatePath, path.join(backendAbs, 'build', 'worker.mjs'))
+}
+
 function buildCloudflare(flags: Flags) {
   const webDir = typeof flags.web === 'string' ? flags.web : 'web'
   const backendDir = typeof flags.backend === 'string' ? flags.backend : 'backend'
@@ -160,21 +190,7 @@ function buildCloudflare(flags: Flags) {
   }
 
   if (!noGoBuild) {
-    run('go', ['run', 'github.com/syumai/workers-go/cmd/workers-assets-gen', '-mode=go'], {}, backendAbs)
-    const goBuildArgs = ['build']
-    if (goTags !== '') goBuildArgs.push('-tags', goTags)
-    goBuildArgs.push('-trimpath', '-ldflags=-s -w', '-o', 'build/app.wasm', '.')
-    run('go', goBuildArgs, { GOOS: 'js', GOARCH: 'wasm' }, backendAbs)
-    const wasmBytes = fs.statSync(path.join(backendAbs, 'build', 'app.wasm')).size
-    const wasmMB = (wasmBytes / 1048576).toFixed(1)
-    console.log(`[nextgin] backend wasm: ${wasmMB} MB (build/app.wasm)`)
-    if (wasmBytes > 20 * 1048576) {
-      console.warn(
-        `[nextgin] warning: backend wasm is ${wasmMB} MB; every new Cloudflare isolate compiles it, so cold starts cost more CPU. Gin's request binding (c.ShouldBind*/c.Bind*) links go-playground/validator and every binding format (~18 MB); use nextgin.BindJSON instead. If you use c.MsgPack or msgpack binding, pass --go-tags= to keep msgpack.`,
-      )
-    }
-    const templatePath = fileURLToPath(new URL('../templates/cf-backend-worker.mjs', import.meta.url))
-    fs.copyFileSync(templatePath, path.join(backendAbs, 'build', 'worker.mjs'))
+    buildCloudflareWasm(backendAbs, goTags)
   }
 
   const backendCfg = generateBackendWrangler(exp, { name })
@@ -232,7 +248,132 @@ function buildCloudflare(flags: Flags) {
   }
 }
 
+function buildSplit(flags: Flags) {
+  let opts: ReturnType<typeof validateSplitFlags>
+  try {
+    opts = validateSplitFlags(flags)
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+
+  const webDir = typeof flags.web === 'string' ? flags.web : 'web'
+  const backendDir = typeof flags.backend === 'string' ? flags.backend : 'backend'
+  const webAbs = path.resolve(cwd, webDir)
+  const backendAbs = path.resolve(cwd, backendDir)
+  const rawName = typeof flags.name === 'string' ? flags.name : path.basename(cwd)
+  const force = flags.force === true
+  const check = flags.check === true
+  const noGoBuild = flags['go-build'] === false
+  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : 'nomsgpack'
+
+  let exp: ReturnType<typeof runExport>
+  let name: string
+  let vercelCfg: ReturnType<typeof generateVercelSplitConfig>
+  let vercelContent: string
+  try {
+    name = workerName(rawName)
+    exp = runExport(backendAbs, opts.backendTarget === 'cloudflare' ? 'cloudflare' : 'backend')
+    vercelCfg = generateVercelSplitConfig(exp, {
+      backendUrl: opts.backendUrl,
+      apiMode: opts.apiMode,
+    })
+    vercelContent = serializeVercelConfig(vercelCfg)
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+
+  const vercelOutPath = path.join(webAbs, 'vercel.json')
+  const vercelLabel = path.join(webDir, 'vercel.json')
+  if (check) {
+    if (!fs.existsSync(vercelOutPath) || fs.readFileSync(vercelOutPath, 'utf8') !== vercelContent) {
+      fail(`${vercelLabel} is out of date; run nextgin build --web-target vercel --backend-target ${opts.backendTarget} --backend-url ${opts.backendUrl}`)
+    }
+    console.log(`[nextgin] ${vercelLabel} is up to date`)
+    return
+  }
+
+  const writeVercel = () => {
+    fs.mkdirSync(webAbs, { recursive: true })
+    fs.writeFileSync(vercelOutPath, vercelContent, 'utf8')
+    const nRewrites = vercelCfg.rewrites?.length ?? 0
+    console.log(`[nextgin] wrote ${vercelLabel} (${nRewrites} rewrites, mode: ${opts.apiMode})`)
+    console.log(`[nextgin] note: set the Vercel project Root Directory to ${webDir}`)
+    console.log(
+      `[nextgin] note: set Vercel env vars NEXTGIN_INTERNAL_URL=${opts.backendUrl} and NEXTGIN_INTERNAL_SECRET (same value as on the backend)`,
+    )
+    if (opts.apiMode === 'direct') {
+      console.log(`[nextgin] note: set NEXT_PUBLIC_NEXTGIN_API_URL=${opts.backendUrl} in Vercel`)
+      console.log(
+        '[nextgin] note: direct mode requires nextgin.CORS(...) on the backend and sharing cookies on the parent domain',
+      )
+    }
+  }
+
+  if (opts.backendTarget === 'cloudflare') {
+    const wranglerPath = path.join(backendAbs, 'wrangler.jsonc')
+    const wranglerLabel = path.join(backendDir, 'wrangler.jsonc')
+    const existing = fs.existsSync(wranglerPath) ? fs.readFileSync(wranglerPath, 'utf8') : undefined
+    if (!canOverwrite(existing) && !force) {
+      fail(`${wranglerLabel} was not generated by nextgin; pass --force to overwrite`)
+    }
+
+    writeVercel()
+    if (!noGoBuild) {
+      buildCloudflareWasm(backendAbs, goTags)
+    }
+
+    const backendCfg = generateBackendWrangler(exp, { name, customDomain: opts.backendHostname })
+    fs.writeFileSync(wranglerPath, serializeWrangler(backendCfg), 'utf8')
+    console.log('[nextgin] cloudflare backend build complete')
+    console.log(`  cd ${backendDir} && npx wrangler deploy`)
+    console.log(
+      `[nextgin] note: ${opts.backendHostname} must be a zone on the same Cloudflare account; set NEXTGIN_INTERNAL_SECRET and CRON_SECRET with \`wrangler secret put\``,
+    )
+    if (backendCfg.triggers.crons.length > 5) {
+      console.warn(
+        `[nextgin] warning: ${backendCfg.triggers.crons.length} cron triggers configured; the Workers Free plan allows 5 cron triggers per account`,
+      )
+    }
+    return
+  }
+
+  const goModPath = path.join(backendAbs, 'go.mod')
+  if (!fs.existsSync(goModPath)) {
+    fail(`${path.join(backendDir, 'go.mod')} not found`)
+  }
+  let goVersion: string
+  try {
+    goVersion = parseGoVersion(fs.readFileSync(goModPath, 'utf8'))
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+
+  const dockerfilePath = path.join(backendAbs, 'Dockerfile')
+  const dockerfileLabel = path.join(backendDir, 'Dockerfile')
+  const existing = fs.existsSync(dockerfilePath) ? fs.readFileSync(dockerfilePath, 'utf8') : undefined
+  if (!canOverwriteDockerfile(existing) && !force) {
+    fail(`${dockerfileLabel} was not generated by nextgin; pass --force to overwrite`)
+  }
+
+  writeVercel()
+  fs.writeFileSync(dockerfilePath, generateDockerfile({ goVersion }), 'utf8')
+  console.log(`[nextgin] wrote ${dockerfileLabel}`)
+  console.log(`  docker build -t ${name}-backend ${backendDir}`)
+  console.log('[nextgin] note: set NEXTGIN_INTERNAL_SECRET and CRON_SECRET on the host')
+  console.log(
+    '[nextgin] note: run ONE instance (the scheduler fires on every instance) or set NEXTGIN_SCHEDULER=off on replicas',
+  )
+  console.log(
+    '[nextgin] note: private Go modules need build credentials at docker build time; a local `replace` directive must point inside the build context and be COPY-ed before `go mod download` (edit the Dockerfile and remove its first line to keep your changes)',
+  )
+}
+
 function build(flags: Flags) {
+  if (flags['web-target'] !== undefined || flags['backend-target'] !== undefined) {
+    buildSplit(flags)
+    return
+  }
+
   const target = resolveTarget(flags)
   if (target === 'cloudflare') {
     buildCloudflare(flags)
