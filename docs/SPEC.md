@@ -313,7 +313,7 @@ npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 
 ## 9. Split topology (web target x backend target)
 
-Status: design, not implemented. The combined targets (§1) run the Go
+Status: Go side (§9.2, §9.3 CORS, §9.5) and CLI (§9.1, §9.4, §9.6) implemented and verified locally; not yet deployed to real Vercel/Cloudflare; §9.7 still a spike. The combined targets (§1) run the Go
 backend inside the same platform as Next.js, so Go work is still metered by
 that platform (on Vercel a cron or webhook is a billed function invocation
 with a duration cap and no persistent state). The split topology puts Next.js
@@ -411,3 +411,18 @@ Gate (§8) plus: API-only mode serves routes and runs a cron with no `dir`;
 `RequireInternal` and `CORS` tests (missing/wrong secret, disallowed origin,
 credentials); CLI tests for both `--api-mode` outputs and for no `crons` in
 split `vercel.json`; Docker build of the emitted Dockerfile.
+
+### 9.10 Verified locally (2026-11-17)
+
+- `--backend-target container`: generated Dockerfile builds (golang:1.27
+  from go.mod, distroless nonroot, 27.6 MB image); the container serves the
+  API, answers the cron route 401 without and 204 with `CRON_SECRET`, 404 on
+  `/` (no frontend), no `[GIN-debug]` output. Limitation: the Dockerfile runs
+  `go mod download` before `COPY . .`, so a local `replace` directive must be
+  copied first (the CLI prints this); published modules are unaffected.
+- `--backend-target cloudflare`: 10.0 MB wasm, wrangler config has
+  `routes: [{pattern, custom_domain: true}]`, `workers_dev: false`.
+- Combined `--target cloudflare` outputs are byte-identical to before.
+- Not yet verified: a real split deploy (Vercel web + Workers or container
+  backend), Vercel external-rewrite billing, `direct` mode cookies/CORS in a
+  browser, Postgres/Redis from wasm (§9.7).
