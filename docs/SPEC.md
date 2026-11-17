@@ -328,20 +328,27 @@ host is the second option.
 
 ### 9.1 CLI
 
-`nextgin build --web <vercel|cloudflare> --backend <cloudflare|container>
---backend-url <https://...> [--api-mode rewrite|direct]`. The existing
-`--target vercel|cloudflare` remains the combined in-platform mode and is
-unchanged. Phase 1 matrix: web=vercel with backend=cloudflare or
-container. web=cloudflare with backend=container waits for Cloudflare
-Containers (option 2).
+`nextgin build --web-target vercel --backend-target <cloudflare|container>
+--backend-url <https://...> [--api-mode rewrite|direct]`. (`--web` and
+`--backend` already name the project directories, so the target flags are
+`--web-target` and `--backend-target`.) `--target` stays the combined
+in-platform mode, unchanged, and cannot be mixed with the split flags.
+Phase 1 supports `--web-target vercel` only; web=cloudflare with
+backend=container waits for Cloudflare Containers (option 2).
+
+Split `vercel.json` is written to `<web dir>/vercel.json` (the Vercel project
+Root Directory is the web dir; Services are not used because only the web app
+deploys to Vercel). `rewrite` mode: `rewrites` with external destinations
+`<backend-url>/<prefix>/:path*`. `direct` mode: `{}`. `/_nextgin/*` is never
+proxied.
 
 ### 9.2 API-only backend mode (`container`)
 
 New target `backend` (`NEXTGIN_TARGET=backend`): no manifest, no frontend,
 no workers; `New(dir, cfg)` must succeed with a missing `dir`. Runs the
 in-process scheduler (§3.5), listens on `:$PORT`, applies Gin release mode.
-`MountFrontend` is a no-op. `nextgin build --backend container` emits
-`build/backend/Dockerfile` (multi-stage Go build, `ENV NEXTGIN_TARGET=backend`)
+`MountFrontend` is a no-op. `nextgin build --backend-target container` emits
+`<backend dir>/Dockerfile` (multi-stage Go build, `ENV NEXTGIN_TARGET=backend`)
 and does not pick a host. Single instance by default; `NEXTGIN_SCHEDULER=off`
 disables the scheduler on replicas (leader election is out of scope).
 
