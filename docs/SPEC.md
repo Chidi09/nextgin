@@ -313,7 +313,7 @@ npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 
 ## 9. Split topology (web target x backend target)
 
-Status: Go side (§9.2, §9.3 CORS, §9.5) and CLI (§9.1, §9.4, §9.6) implemented and verified locally; not yet deployed to real Vercel/Cloudflare; §9.7 still a spike. The combined targets (§1) run the Go
+Status: Go side (§9.2, §9.3 CORS, §9.5) and CLI (§9.1, §9.4, §9.6) implemented and verified locally; not yet deployed to real Vercel/Cloudflare; §9.7 spiked locally (works, with limits). The combined targets (§1) run the Go
 backend inside the same platform as Next.js, so Go work is still metered by
 that platform (on Vercel a cron or webhook is a billed function invocation
 with a duration cap and no persistent state). The split topology puts Next.js
@@ -386,16 +386,51 @@ Combined mode sets `workers_dev: false` because only the service binding
 calls it. In split mode the generated wrangler config instead routes the
 `--backend-url` hostname as a custom domain and keeps `workers_dev: false`.
 
-### 9.7 External data stores from wasm (spike, unverified)
+### 9.7 External data stores from wasm (spiked locally 2026-11-17)
 
-workers-go v0.36.0 has `cloudflare/sockets` (`Connect` returns a
-`net.Conn`, TLS optional) and no Hyperdrive binding. So Postgres/Redis from
-the wasm backend need a driver with a custom dialer, or an HTTP API
-(Upstash REST works over `net/http`). To verify under `wrangler dev` against
-a local Postgres before claiming support: pgx and go-redis with the sockets
-dialer; connection reuse across requests in the persistent instance; wasm
-size (warn above 20 MiB, §6 CLI); cold-start CPU. Until verified the README
-says "possible, untested".
+Spike: pgx v5.13.0 and go-redis v9.23.0 in the Go/wasm backend, using
+workers-go v0.36.0 `cloudflare/sockets` (a `net.Conn` over Workers
+`connect()`), under `wrangler dev` against local Postgres 16 and Redis 7.
+workers-go has no Hyperdrive binding.
+
+Works:
+- Postgres: `cfg.DialFunc` = a dialer calling `sockets.Connect`, and
+  `cfg.LookupFunc` returning the host unchanged (Go wasm has no resolver).
+  Plaintext and TLS both work; with `sslmode=require` pgx does the TLS
+  handshake itself (crypto/tls in wasm; `show ssl` = on). Connect + query
+  ~32-46 ms warm, 139-181 ms first request (local network).
+- Redis: go-redis `Options.Dialer` = the same dialer; INCR works.
+
+Required, found by ablation:
+- The dialer must call `sockets.Connect(context.WithoutCancel(ctx), ...)`.
+  workers-go ties the socket's lifetime to the context passed to `Connect`,
+  and go-redis cancels its dial context as soon as the dial returns, so the
+  first read fails with `i/o timeout`. Not needed for pgx's default path, but
+  harmless. (A wrapper mapping zero-time deadlines to the far future was also
+  tried and is NOT needed.)
+
+Hard limit:
+- A connection cannot be reused across requests. The second request that
+  touches a connection opened by an earlier request hangs and the runtime
+  cancels it ("Worker's code had hung"); the next request then runs on a
+  fresh instance. Open one connection per request and close it. For
+  production, put a pooler in front (Neon/Supabase pooler, PgBouncer) so a
+  per-request connection is cheap.
+
+Not verified: socket-native TLS (`SecureTransportOn`; it failed against a
+self-signed cert locally, so it says nothing about real certificates, and
+would avoid TLS CPU in wasm), real managed providers, behaviour under load,
+Upstash-style REST clients.
+
+Size: the spike (nextgin + pgx + go-redis, `-tags nomsgpack`, stripped) is
+25.2 MB (the 10.0 MB example baseline plus ~15 MB), above the CLI's 20 MiB
+warning. How much is pgx vs go-redis was not measured, and the cold-start
+CPU of a 25 MB module was not measured.
+
+Follow-up: a small portable helper in nextgin (`nextgin.DialContext`:
+`sockets.Connect` with the detached context on js/wasm, `net.Dialer`
+elsewhere, plus a host-passthrough lookup) so the same pgx/go-redis code
+runs on every target.
 
 ### 9.8 Not in scope
 
@@ -425,4 +460,4 @@ split `vercel.json`; Docker build of the emitted Dockerfile.
 - Combined `--target cloudflare` outputs are byte-identical to before.
 - Not yet verified: a real split deploy (Vercel web + Workers or container
   backend), Vercel external-rewrite billing, `direct` mode cookies/CORS in a
-  browser, Postgres/Redis from wasm (§9.7).
+  browser, Postgres/Redis against managed providers and under load (§9.7).
