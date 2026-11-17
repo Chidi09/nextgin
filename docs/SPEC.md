@@ -477,10 +477,22 @@ is external. (The command is `nextgin deploy`; the npm bin is `nextgin`.)
 
 ### 10.1 Command, config, flags
 
-`nextgin deploy [--host user@host] [--name app] [--domain example.com]
-[--postgres internal|external|none] [--redis internal|external|none]
-[--reconfigure] [--dry-run] [--no-install-docker] [--ssh-port 22]
-[--identity ~/.ssh/key]`.
+`nextgin deploy [--host user@host | --local] [--name app] [--domain
+example.com] [--postgres internal|external|none] [--redis
+internal|external|none] [--reconfigure] [--dry-run] [--no-install-docker]
+[--ssh-port 22] [--identity ~/.ssh/key] [--dir /opt/nextgin] [--http-port 80]
+[--https-port 443]`.
+
+`--local` deploys to the machine the command runs on instead of over SSH: the
+same steps (build, image, `.env` merge, compose up, health check) with local
+process execution as the transport, no SSH, no OS check, no Docker install
+(Docker must already work for the current user). It exists for running
+`nextgin deploy` on the server itself and for testing without a VPS. `--dir`
+is the base directory (default `/opt/nextgin`, the app lives in
+`<dir>/<name>/`); `--http-port` / `--https-port` are the host ports compose
+publishes (defaults 80 / 443) so a test run does not collide with other
+services. `--local` and `--host` are mutually exclusive; one is required
+unless `nextgin.deploy.json` supplies `host`.
 
 Non-secret choices (`host`, `name`, `domain`, ssh port) are saved to
 `nextgin.deploy.json` in the project root after the first run, so later runs
@@ -527,13 +539,13 @@ Remote dir `/opt/nextgin/<name>/` holds `docker-compose.yml`, `.env` (mode
 600) and, with a domain, `Caddyfile`. Services:
 - `app`: the image, `env_file: .env`, `restart: unless-stopped`, `depends_on`
   each internal database with `condition: service_healthy`. Published as
-  `80:8080` when there is no domain; not published when Caddy is present.
+  `<http-port>:8080` (default 80) when there is no domain; not published when Caddy is present.
 - `postgres` (only when internal): `postgres:16`, named volume, env
   `POSTGRES_USER=nextgin`, `POSTGRES_DB=<name with non-[a-z0-9_] -> _>`,
   `POSTGRES_PASSWORD` from `.env`, healthcheck `pg_isready`. NO `ports:`.
 - `redis` (only when internal): `redis:7`, `--requirepass` from `.env`,
   `--appendonly yes`, named volume, healthcheck `redis-cli ping`. NO `ports:`.
-- `caddy` (only with `--domain`): `caddy:2`, publishes `80` and `443`,
+- `caddy` (only with `--domain`): `caddy:2`, publishes `<http-port>:80` and `<https-port>:443`,
   mounts `Caddyfile`, volumes for data/config. Caddyfile:
   `<domain> { reverse_proxy app:8080 }` (automatic HTTPS; the DNS record must
   already point at the VPS; print that reminder).
@@ -580,15 +592,16 @@ no flag -> internal, with external requiring the flag plus env var.
 1. SSH check (`BatchMode=yes`, `ConnectTimeout=10`, `StrictHostKeyChecking`
    left at the user's ssh default). Host key problems are surfaced, not
    bypassed.
-2. OS check: Debian/Ubuntu (`/etc/os-release`), and root or passwordless
-   sudo; otherwise fail with a precise message.
+2. OS check: Debian or Ubuntu or a derivative (`ID` or `ID_LIKE` in
+   `/etc/os-release` contains `debian` or `ubuntu`), and root or passwordless
+   sudo; otherwise fail with a precise message. Skipped with `--local`.
 3. Docker: if `docker compose version` fails, install with Docker's official
    convenience script (`curl -fsSL https://get.docker.com | sh`) unless
    `--no-install-docker`, which fails with instructions instead.
 4. `mkdir -p /opt/nextgin/<name>`, upload compose, Caddyfile, merged `.env`
    (mode 600), load the image, `docker compose up -d --remove-orphans`.
 5. Wait up to 120 s for the app container to be healthy, then print the URL
-   (`https://<domain>` or `http://<host>`). On failure print the last 50 log
+   (`https://<domain>` or `http://<host>[:<http-port>]`). On failure print the last 50 log
    lines of the unhealthy service and exit non-zero; leave the stack up.
 
 ### 10.8 Known limits (v1)
@@ -598,7 +611,7 @@ no flag -> internal, with external requiring the flag plus env var.
 - No Postgres backups. Documented, not solved.
 - Behind Caddy, Go sees the proxy as the client: set
   `Config.TrustForwardedHeaders: true` in `main.go` (not controlled by the CLI).
-- Debian/Ubuntu only; Docker only; no Windows-hosted VPS.
+- Debian/Ubuntu family only (remote); Docker only; no Windows-hosted VPS.
 
 ### 10.9 Code layout and verification
 
