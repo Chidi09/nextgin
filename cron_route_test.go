@@ -36,6 +36,7 @@ func TestDetectTarget(t *testing.T) {
 		{name: "explicit selfhost", targetEnv: "selfhost", want: TargetSelfhost},
 		{name: "explicit vercel", targetEnv: "vercel", want: TargetVercel},
 		{name: "explicit cloudflare", targetEnv: "cloudflare", want: TargetCloudflare},
+		{name: "explicit backend", targetEnv: "backend", want: TargetBackend},
 		{name: "vercel env", vercelEnv: "1", want: TargetVercel},
 		{name: "NEXTGIN_TARGET overrides VERCEL", targetEnv: "selfhost", vercelEnv: "1", want: TargetSelfhost},
 		{name: "VERCEL non-1 ignored", vercelEnv: "0", want: TargetSelfhost},

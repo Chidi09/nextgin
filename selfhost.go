@@ -136,8 +136,9 @@ func initFrontend(dir string, cfg Config, target TargetKind) (*Frontend, error) 
 	switch target {
 	case TargetSelfhost:
 		return NewFrontend(dir, cfg)
-	case TargetVercel:
-		// Vercel serves Next.js natively and routes Go traffic directly to this service.
+	case TargetVercel, TargetBackend:
+		// Vercel serves Next.js natively and routes Go traffic directly to this service;
+		// backend runs API-only with Next.js deployed elsewhere.
 		return nil, nil
 	default:
 		return nil, errors.New("nextgin: the cloudflare target requires GOOS=js GOARCH=wasm")
@@ -145,7 +146,7 @@ func initFrontend(dir string, cfg Config, target TargetKind) (*Frontend, error) 
 }
 
 func (a *App) runTarget(addr string) error {
-	if a.target == TargetVercel {
+	if a.target == TargetVercel || a.target == TargetBackend {
 		if p := os.Getenv("PORT"); p != "" {
 			addr = ":" + p
 		} else if addr == "" {
@@ -157,7 +158,7 @@ func (a *App) runTarget(addr string) error {
 	defer stop()
 
 	var waitScheduler func(time.Duration)
-	if a.target == TargetSelfhost {
+	if a.schedulerEnabled() {
 		waitScheduler = a.startScheduler(ctx)
 	}
 
