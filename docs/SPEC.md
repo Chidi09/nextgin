@@ -264,8 +264,10 @@ torn down):
   per isolate (expected; see §5).
 
 Open items:
-- Vercel's production cron invoker reaching a service path (pending the
-  scratch deploy's daily cron window).
+- (Closed) Vercel's production cron invoker reaches a service path: the
+  daily heartbeat fired at 23:46:10 UTC (within its 23:00 hour on Hobby) as
+  GET /_nextgin/cron/heartbeat on service `backend`, Bearer CRON_SECRET
+  accepted, 204.
 
 Resolved after the first deploy (re-deployed and verified 2026-11-16):
 - The generated backend wrangler.jsonc sets `workers_dev: false` and
