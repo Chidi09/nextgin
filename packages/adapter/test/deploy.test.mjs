@@ -456,3 +456,40 @@ test('generateCaddyfile, canOverwriteGenerated, and dbNameFor', () => {
   assert.equal(dbNameFor('a'.repeat(50)), 'a'.repeat(40))
   assert.equal(dbNameFor(''), 'app')
 })
+
+test('generateCompose supports custom httpPort and httpsPort', () => {
+  const noDomain = generateCompose({
+    name: 'shop',
+    image: 'nextgin-shop:latest',
+    postgres: 'none',
+    redis: 'none',
+    dbName: 'shop',
+    httpPort: 8081,
+    httpsPort: 8443,
+  })
+  assert.match(noDomain, /ports: \["8081:8080"\]/)
+
+  const withDomain = generateCompose({
+    name: 'shop',
+    image: 'nextgin-shop:latest',
+    postgres: 'none',
+    redis: 'none',
+    domain: 'shop.example.com',
+    dbName: 'shop',
+    httpPort: 8081,
+    httpsPort: 8443,
+  })
+  assert.match(withDomain, /ports: \["8081:80", "8443:443"\]/)
+})
+
+test('mergeEnv doubles $ in external Postgres and Redis URLs for compose', () => {
+  const ext = mergeEnv(new Map(), {
+    postgres: 'external',
+    redis: 'external',
+    dbName: 'my_app',
+    externalPostgresUrl: 'postgres://user:p$ss$word@db.example.com:5432/app',
+    externalRedisUrl: 'redis://:r$d$s@redis.example.com:6379/0',
+  })
+  assert.equal(ext.get('DATABASE_URL'), 'postgres://user:p$$ss$$word@db.example.com:5432/app')
+  assert.equal(ext.get('REDIS_URL'), 'redis://:r$$d$$s@redis.example.com:6379/0')
+})

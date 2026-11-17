@@ -136,6 +136,42 @@ Limits, found by testing under `wrangler dev` against local Postgres and Redis:
 - pgx plus go-redis add roughly 15 MB of wasm.
 - Not yet tested against managed providers or under load.
 
+## Deploy to a VPS
+
+```
+nextgin deploy --host root@203.0.113.7 --domain shop.example.com
+```
+
+One command builds the app on your machine, ships it to the server over SSH
+and starts it with Docker Compose: the app (Go front door plus Node workers),
+Postgres and Redis when your Go module uses them, and Caddy with automatic
+HTTPS when you pass `--domain`. Later runs are just `nextgin deploy` (the
+host, name and domain are saved to `nextgin.deploy.json`, which never holds
+secrets).
+
+- **Databases:** Postgres and Redis are detected from your `go.mod`. The first
+  deploy asks once per detected service whether to create it on the server
+  (Enter = yes); answering no asks for the external URL (hidden input). Created
+  services are wired into the app as `DATABASE_URL` and `REDIS_URL` using
+  Docker service names, so there is nothing to configure and no database port
+  is published.
+- **Secrets:** generated once into `/opt/nextgin/<name>/.env` (mode 600) on the
+  server and never regenerated; redeploys keep every existing value.
+- **Server requirements:** Debian/Ubuntu family, root or passwordless sudo.
+  Docker is installed with Docker's official script if missing
+  (`--no-install-docker` to refuse).
+- **On the server itself:** `nextgin deploy --local` does the same on the
+  machine you are on; `--dir`, `--http-port` and `--https-port` change where
+  it installs and which host ports it uses. `--dry-run` writes the generated
+  files to `.nextgin/deploy/` without touching anything.
+- **Limits:** one server, one app instance, a short interruption on each
+  deploy, no rollback command, and **no database backups**. Behind Caddy, set
+  `TrustForwardedHeaders: true` in your `nextgin.Config`.
+
+Status: verified with `--local` on a Linux machine (first deploy, redeploy with
+data and passwords preserved, external database, Caddy HTTPS). Not yet run
+against a real VPS over SSH.
+
 ## Security notes
 
 - Cron routes fail closed: no token, no run. The internal scheduler uses a

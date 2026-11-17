@@ -24,6 +24,7 @@ import {
   parseGoVersion,
   validateSplitFlags,
 } from './split.js'
+import { runDeploy } from './deploy/command.js'
 
 const HELP = `nextgin — Next.js on a Go/Gin front door
 
@@ -50,6 +51,10 @@ Usage:
 
   nextgin finalize [--out-dir .nextgin]
       Copies .next/standalone into .nextgin/server (normally automatic).
+
+  nextgin deploy [--host user@host | --local] [--name app] [--domain example.com] [--postgres internal|external|none] [--redis internal|external|none] [--reconfigure] [--dry-run] [--no-install-docker] [--ssh-port 22] [--identity ~/.ssh/key] [--dir /opt/nextgin] [--http-port 80] [--https-port 443]
+      Builds in self-host mode and deploys the app, Postgres, Redis, and
+      Caddy (when --domain is set) to a VPS via SSH or locally (--local).
 `
 
 type Flags = Record<string, string | boolean>
@@ -484,6 +489,9 @@ switch (cmd) {
     break
   case 'finalize':
     finalizeCmd(flags)
+    break
+  case 'deploy':
+    runDeploy(flags, { cwd }).catch((err) => fail(err instanceof Error ? err.message : String(err)))
     break
   default:
     console.log(HELP)

@@ -468,7 +468,7 @@ split `vercel.json`; Docker build of the emitted Dockerfile.
 
 ## 10. `nextgin deploy` (single VPS, everything included)
 
-Status: design. Goal: `nextgin deploy` takes a project to a running VPS with
+Status: implemented; verified with `--local` on this machine (§10.10), not yet against a real VPS over SSH. Goal: `nextgin deploy` takes a project to a running VPS with
 no hand-written Docker, proxy or env files. The app runs in **self-host mode**
 (Go front door + Node workers, §4.1), not the API-only `backend` target.
 Postgres and Redis are created on the server and wired into the app's env
@@ -625,3 +625,33 @@ the generators; `--dry-run`; run the generated compose stack locally under an
 `nextgin.DialContext`), then redeploy without `-v` and confirm data and
 passwords survive; external mode against a separate container. A real VPS run
 needs the user's explicit approval.
+
+### 10.10 Verified locally (2026-11-17, `--local`, Docker Compose v5.7)
+
+Test app: the example plus a route that increments a counter in Postgres
+(pgx) and Redis (go-redis) from `DATABASE_URL` / `REDIS_URL`, via
+`nextgin.DialContext`. Run with `--dir <scratch> --http-port 18180`.
+- First deploy (no prompts, services detected from go.mod): app healthy,
+  `/api/dbcheck` incremented both stores through the auto-wired URLs,
+  prerendered and SSR pages served; Postgres/Redis publish no host ports
+  (`5432/tcp`, `6379/tcp` only); `.env` mode 600; the app runs as the `node`
+  user; `nextgin.deploy.json` holds no secrets.
+- Redeploy: `.env` byte-identical, the Postgres container not recreated,
+  data persisted (counters 2 -> 3), nothing asked, previous image kept.
+- External Postgres (`--postgres external`, URL from `DATABASE_URL` env, the
+  password containing `$`): no Postgres service generated, the URL stored
+  with `$$`, the app connected to the external database.
+- `--domain app.localhost` with custom ports: Caddy up, HTTPS 200 through the
+  proxy, database check passed through it.
+- `--dry-run`: preview files written, secrets shown as `<hidden>`, no build.
+- Interactive prompts (pseudo-terminal): answering `n` switches a service to
+  external and asks for a hidden URL. Input fed faster than a person types
+  loses lines (readline is recreated per prompt); not an issue when typing.
+- Review found and fixed: the SSH image upload ran plain `docker load` when the
+  remote user needs `sudo -n docker`; `loadImage` now takes the docker command.
+  The success URL now includes a non-default HTTPS port.
+
+Not verified: a real SSH deploy (the host had no sshd and no passwordless
+sudo), Docker installation on a fresh VPS, arm64 targets, apps with native
+`.node` modules, `--reconfigure` end to end, large `.nextgin` trees with
+symlinks, Let's Encrypt issuance.

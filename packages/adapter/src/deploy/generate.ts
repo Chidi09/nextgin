@@ -10,6 +10,8 @@ export interface StackOptions {
   redis: DbMode
   domain?: string
   dbName: string
+  httpPort?: number
+  httpsPort?: number
 }
 
 /**
@@ -65,6 +67,8 @@ export function generateCompose(o: StackOptions): string {
   const hasPostgres = o.postgres === 'internal'
   const hasRedis = o.redis === 'internal'
   const hasDomain = o.domain !== undefined
+  const httpPort = o.httpPort ?? 80
+  const httpsPort = o.httpsPort ?? 443
 
   const lines: string[] = [
     GENERATED_MARKER,
@@ -89,7 +93,7 @@ export function generateCompose(o: StackOptions): string {
   }
 
   if (!hasDomain) {
-    lines.push('    ports: ["80:8080"]')
+    lines.push(`    ports: ["${httpPort}:8080"]`)
   }
 
   if (hasPostgres) {
@@ -132,7 +136,7 @@ export function generateCompose(o: StackOptions): string {
       '  caddy:',
       `    image: ${yamlQuote('caddy:2')}`,
       '    restart: unless-stopped',
-      '    ports: ["80:80", "443:443"]',
+      `    ports: ["${httpPort}:80", "${httpsPort}:443"]`,
       '    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"]',
       '    depends_on: [app]',
     )

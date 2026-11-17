@@ -90,7 +90,8 @@ export function mergeEnv(
       if (!plan.externalPostgresUrl) {
         throw new Error('nextgin deploy: external Postgres URL is required')
       }
-      out.set('DATABASE_URL', plan.externalPostgresUrl)
+      // `.env` is consumed only by Docker Compose, which interpolates `$`; double `$` to `$$` on disk.
+      out.set('DATABASE_URL', plan.externalPostgresUrl.split('$').join('$$'))
     }
   }
 
@@ -107,7 +108,8 @@ export function mergeEnv(
       if (!plan.externalRedisUrl) {
         throw new Error('nextgin deploy: external Redis URL is required')
       }
-      out.set('REDIS_URL', plan.externalRedisUrl)
+      // `.env` is consumed only by Docker Compose, which interpolates `$`; double `$` to `$$` on disk.
+      out.set('REDIS_URL', plan.externalRedisUrl.split('$').join('$$'))
     }
   }
 
