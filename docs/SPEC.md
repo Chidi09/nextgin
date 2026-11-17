@@ -14,6 +14,8 @@ scheduled jobs — deploys to three targets:
 | `vercel` | Vercel router | Vercel's native Next.js | Vercel Service, `framework: go`, native | `vercel.json` `crons` → cron route |
 | `cloudflare` | Next Worker (OpenNext) | OpenNext Cloudflare | separate Worker, Go→wasm, persistent instance (§5) | Worker Cron Trigger → cron route in-process |
 
+Split topologies (web and backend on different hosts) are specified in §9.
+
 Design rule: **a cron job is a Gin route.** Every target executes a job by
 sending a request through the same Gin engine and middleware chain as API
 traffic. Targets differ only in what triggers that request.
@@ -308,3 +310,97 @@ GOOS=js GOARCH=wasm go build ./...  # from §2 onward
 (cd packages/adapter && npx tsc -p tsconfig.json && node --test test/)
 npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 ```
+
+## 9. Split topology (web target x backend target)
+
+Status: design, not implemented. The combined targets (§1) run the Go
+backend inside the same platform as Next.js, so Go work is still metered by
+that platform (on Vercel a cron or webhook is a billed function invocation
+with a duration cap and no persistent state). The split topology puts Next.js
+and the Go backend on independent hosts so backend work, crons, DB pooling
+and webhooks leave the web platform. Rendering (SSR, Server Actions) stays on
+the web platform; this does not reduce that bill.
+
+Backend hosting is a choice, not a requirement. Users whose data lives in
+managed Postgres/Redis do not want to run a server, so the first-class
+no-server backend is Cloudflare Workers (existing §5 build); a persistent
+host is the second option.
+
+### 9.1 CLI
+
+`nextgin build --web <vercel|cloudflare> --backend <cloudflare|container>
+--backend-url <https://...> [--api-mode rewrite|direct]`. The existing
+`--target vercel|cloudflare` remains the combined in-platform mode and is
+unchanged. Phase 1 matrix: web=vercel with backend=cloudflare or
+container. web=cloudflare with backend=container waits for Cloudflare
+Containers (option 2).
+
+### 9.2 API-only backend mode (`container`)
+
+New target `backend` (`NEXTGIN_TARGET=backend`): no manifest, no frontend,
+no workers; `New(dir, cfg)` must succeed with a missing `dir`. Runs the
+in-process scheduler (§3.5), listens on `:$PORT`, applies Gin release mode.
+`MountFrontend` is a no-op. `nextgin build --backend container` emits
+`build/backend/Dockerfile` (multi-stage Go build, `ENV NEXTGIN_TARGET=backend`)
+and does not pick a host. Single instance by default; `NEXTGIN_SCHEDULER=off`
+disables the scheduler on replicas (leader election is out of scope).
+
+### 9.3 Browser routing (`--api-mode`, default `rewrite`)
+
+- `rewrite`: `vercel.json` has `rewrites` `/<prefix>/:path*` ->
+  `<backend-url>/<prefix>/:path*` for each exported Go prefix, no
+  `services.backend`, no `crons`. Same-origin, no client changes. Verify how
+  Vercel bills external rewrites from vercel.com/docs before the README
+  claims any saving.
+- `direct`: no rewrites. Browser calls `<backend-url>` itself. Requires Go
+  middleware `nextgin.CORS(origins ...string)` (explicit allow-list,
+  credentials on, never `*` with credentials) and documented cookie guidance
+  (`Domain=` on the shared parent, `SameSite`, `Secure`). The CLI prints
+  `NEXT_PUBLIC_NEXTGIN_API_URL=<backend-url>` for client code.
+
+### 9.4 Crons
+
+Split builds emit no `crons` in `vercel.json`. `container` runs the
+scheduler; `cloudflare` uses Cron Triggers (§3.3). Vercel does zero
+invocations for jobs.
+
+### 9.5 Server-to-server auth (fail closed)
+
+The backend is public. `NEXTGIN_INTERNAL_SECRET` is set on both sides.
+`nextgin.RequireInternal()` is a Gin middleware that 401s unless
+`X-Nextgin-Internal` matches (constant-time compare); with the secret unset
+it rejects every request. Server-side Next code calls the backend with
+`NEXTGIN_INTERNAL_URL` = `<backend-url>` and that header (small helper in
+`@nextgin/adapter`). The cron route keeps its own bearer (§3.4).
+
+### 9.6 Cloudflare backend exposed publicly
+
+Combined mode sets `workers_dev: false` because only the service binding
+calls it. In split mode the generated wrangler config instead routes the
+`--backend-url` hostname as a custom domain and keeps `workers_dev: false`.
+
+### 9.7 External data stores from wasm (spike, unverified)
+
+workers-go v0.36.0 has `cloudflare/sockets` (`Connect` returns a
+`net.Conn`, TLS optional) and no Hyperdrive binding. So Postgres/Redis from
+the wasm backend need a driver with a custom dialer, or an HTTP API
+(Upstash REST works over `net/http`). To verify under `wrangler dev` against
+a local Postgres before claiming support: pgx and go-redis with the sockets
+dialer; connection reuse across requests in the persistent instance; wasm
+size (warn above 20 MiB, §6 CLI); cold-start CPU. Until verified the README
+says "possible, untested".
+
+### 9.8 Not in scope
+
+- Go caching rendered pages behind Vercel (Vercel's own cache sits in front;
+  unproven).
+- Image resizing route (`images.loader`): container backend only, separate
+  feature.
+- Leader election for multi-instance schedulers.
+
+### 9.9 Verification
+
+Gate (§8) plus: API-only mode serves routes and runs a cron with no `dir`;
+`RequireInternal` and `CORS` tests (missing/wrong secret, disallowed origin,
+credentials); CLI tests for both `--api-mode` outputs and for no `crons` in
+split `vercel.json`; Docker build of the emitted Dockerfile.
