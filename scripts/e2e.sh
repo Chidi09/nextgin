@@ -62,6 +62,15 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $BASE" -F "$ACTION_FIE
 check "Server Action POST ($ACTION_FIELD -> $CODE) persisted via Go API" '[[ -n "$ACTION_FIELD" ]] && curl -s $BASE/api/todos | grep -q "$TITLE"'
 check "Client-component API call: PATCH /api/todos/2" 'curl -s -X PATCH -H "content-type: application/json" -d "{\"done\":true}" $BASE/api/todos/2 | grep -q "\"done\":true"'
 
+check "cron route requires auth: GET /_nextgin/cron/heartbeat -> 401" '[[ "$(curl -s -o /dev/null -w %{http_code} $BASE/_nextgin/cron/heartbeat)" == 401 ]]'
+HB_OK=0
+for _ in $(seq 1 35); do
+  HB=$(curl -s "$BASE/api/heartbeat" | grep -o '"count":[0-9]*' | cut -d: -f2)
+  if [[ -n "$HB" && "$HB" -ge 1 ]]; then HB_OK=1; break; fi
+  sleep 2
+done
+check "selfhost cron heartbeat fired (count=${HB:-0})" '[[ $HB_OK == 1 ]]'
+
 # Crash recovery: kill one worker, traffic keeps flowing and it comes back.
 WPIDS=$(workers)
 VICTIM=$(cut -d' ' -f1 <<<"$WPIDS")

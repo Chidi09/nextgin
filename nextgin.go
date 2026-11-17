@@ -10,20 +10,10 @@
 package nextgin
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"runtime"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +56,9 @@ type Config struct {
 	StartupTimeout time.Duration
 	// ShutdownGrace bounds in-flight requests on Close. Default 10s.
 	ShutdownGrace time.Duration
+	// CronTimeout is the per-run timeout for scheduled jobs on the selfhost
+	// target. Default 5m.
+	CronTimeout time.Duration
 	// Env is extra environment for workers ("KEY=value").
 	Env []string
 	// Port is passed to workers as PORT, used by Next.js for self-referencing
@@ -80,125 +73,15 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Frontend is the net/http entry point: build-output serving plus the worker
-// pool lifecycle. It implements http.Handler.
-type Frontend struct {
-	http.Handler
-	Manifest *Manifest // nil in dev mode
-	pool     *Pool
-}
-
-// NewFrontend loads the .nextgin build output from dir and starts workers.
-func NewFrontend(dir string, cfg Config) (*Frontend, error) {
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
-	}
-	devURL := cfg.DevURL
-	if devURL == "" {
-		devURL = os.Getenv(DevURLEnv)
-	}
-	if devURL != "" {
-		h, err := devProxy(devURL, cfg.Logger)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Logger.Info("nextgin: dev mode, proxying frontend", "to", devURL)
-		return &Frontend{Handler: h}, nil
-	}
-
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, err
-	}
-	assets := cfg.Assets
-	if assets == nil {
-		assets = os.DirFS(absDir)
-	}
-	m, err := LoadManifest(assets)
-	if err != nil {
-		return nil, err
-	}
-
-	workers := cfg.Workers
-	if workers <= 0 {
-		workers = min(runtime.NumCPU(), 4)
-	}
-	entry := filepath.Join(absDir, filepath.FromSlash(m.Worker.Entry))
-	if _, err := os.Stat(entry); err != nil {
-		return nil, fmt.Errorf("nextgin: worker entry %s missing (did the build finish? try `npx nextgin finalize`): %w", entry, err)
-	}
-	env := append([]string{"NODE_ENV=production"}, cfg.Env...)
-	if cfg.Port != "" {
-		// NEXTGIN_INTERNAL_URL lets Server Components / Actions call the Go
-		// API routes on this same server.
-		env = append(env, "PORT="+cfg.Port, InternalURLEnv+"=http://127.0.0.1:"+cfg.Port)
-	}
-	if cfg.ShutdownGrace > 0 {
-		env = append(env, fmt.Sprintf("NEXTGIN_SHUTDOWN_GRACE_MS=%d", cfg.ShutdownGrace.Milliseconds()))
-	}
-
-	pool, err := StartPool(PoolConfig{
-		Runtime:               cfg.Runtime,
-		Workers:               workers,
-		Dir:                   filepath.Join(absDir, filepath.FromSlash(m.Worker.Dir)),
-		Entry:                 entry,
-		Env:                   env,
-		SocketDir:             cfg.SocketDir,
-		StartupTimeout:        cfg.StartupTimeout,
-		ShutdownGrace:         cfg.ShutdownGrace,
-		TrustForwardedHeaders: cfg.TrustForwardedHeaders,
-		Logger:                cfg.Logger,
-	})
-	if err != nil {
-		return nil, err
-	}
-	h, err := NewHandler(m, assets, pool, HandlerOptions{
-		DisablePrerendered: cfg.DisablePrerendered,
-		DebugHeaders:       cfg.DebugHeaders || os.Getenv("NEXTGIN_DEBUG_HEADERS") == "1",
-	})
-	if err != nil {
-		_ = pool.Close()
-		return nil, err
-	}
-	return &Frontend{Handler: h, Manifest: m, pool: pool}, nil
-}
-
-// Close stops the workers. Call it after your HTTP server has drained.
-func (f *Frontend) Close() error {
-	if f.pool == nil {
-		return nil
-	}
-	return f.pool.Close()
-}
-
-func devProxy(raw string, log *slog.Logger) (http.Handler, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("nextgin: invalid dev URL %q", raw)
-	}
-	return &httputil.ReverseProxy{
-		FlushInterval: -1,
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(u)
-			pr.Out.Host = pr.In.Host
-			pr.SetXForwarded()
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			log.Warn("nextgin: next dev unreachable", "err", err)
-			http.Error(w, "next dev server is not reachable yet", http.StatusBadGateway)
-		},
-	}, nil
-}
-
 // App is the Gin integration: register API routes on Router, then call
 // MountFrontend so every unmatched request falls through to Next.js.
 type App struct {
 	Router   *gin.Engine
 	Frontend *Frontend
 	cfg      Config
+	target   TargetKind
+	jobs     []CronJob
+	jobNames map[string]bool
 }
 
 // New creates an App serving the .nextgin output in dir.
@@ -206,65 +89,67 @@ func New(dir string, cfg Config) (*App, error) {
 	if cfg.Port == "" {
 		cfg.Port = os.Getenv("PORT")
 	}
-	f, err := NewFrontend(dir, cfg)
+	target, err := DetectTarget()
 	if err != nil {
 		return nil, err
+	}
+	applyGinMode(target)
+	var f *Frontend
+	if exportMode() {
+		// Export mode inspects Go routes and jobs without touching disk or
+		// booting workers. stdout must carry only the export JSON, so send
+		// gin's debug output (route listing, mode warnings) to stderr.
+		gin.DefaultWriter = os.Stderr
+	} else {
+		f, err = initFrontend(dir, cfg, target)
+		if err != nil {
+			return nil, err
+		}
 	}
 	r := cfg.Router
 	if r == nil {
 		r = gin.Default()
 	}
-	return &App{Router: r, Frontend: f, cfg: cfg}, nil
+	return &App{Router: r, Frontend: f, cfg: cfg, target: target}, nil
 }
 
 // Handler returns the engine-agnostic http.Handler for use with net/http or
 // other routers (e.g. chi: r.NotFound(app.Handler().ServeHTTP)).
-func (a *App) Handler() http.Handler { return a.Frontend }
+func (a *App) Handler() http.Handler {
+	if a.Frontend == nil {
+		return http.NotFoundHandler()
+	}
+	return a.Frontend
+}
 
 // MountFrontend routes every request Gin has no route for to Next.js, so
 // routes you register on Router (e.g. /api/*) always take priority.
 func (a *App) MountFrontend() {
+	if a.Frontend == nil {
+		return
+	}
 	a.Router.NoRoute(gin.WrapH(a.Frontend))
 }
 
 // Run serves on addr until SIGINT/SIGTERM, then drains in-flight requests
 // and stops the workers.
 func (a *App) Run(addr string) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           a.Router,
-		ReadHeaderTimeout: 10 * time.Second,
+	if exportMode() {
+		if err := a.exportTo(os.Getenv(ExportFileEnv)); err != nil {
+			return err
+		}
+		os.Exit(0)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 1)
-	go func() {
-		a.cfg.loggerOrDefault().Info("nextgin: listening", "addr", displayAddr(addr))
-		errCh <- srv.ListenAndServe()
-	}()
-
-	select {
-	case err := <-errCh:
-		_ = a.Close()
-		return err
-	case <-ctx.Done():
-	}
-	grace := a.cfg.ShutdownGrace
-	if grace <= 0 {
-		grace = 10 * time.Second
-	}
-	shutCtx, cancel := context.WithTimeout(context.Background(), grace)
-	defer cancel()
-	err := srv.Shutdown(shutCtx)
-	if cerr := a.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	return a.runTarget(addr)
 }
 
 // Close stops the Next.js workers.
-func (a *App) Close() error { return a.Frontend.Close() }
+func (a *App) Close() error {
+	if a.Frontend == nil {
+		return nil
+	}
+	return a.Frontend.Close()
+}
 
 func (c Config) loggerOrDefault() *slog.Logger {
 	if c.Logger != nil {
@@ -273,9 +158,18 @@ func (c Config) loggerOrDefault() *slog.Logger {
 	return slog.Default()
 }
 
-func displayAddr(addr string) string {
-	if strings.HasPrefix(addr, ":") {
-		return "http://localhost" + addr
+// exportTo writes the export JSON to path, or to stdout when path is empty.
+func (a *App) exportTo(path string) error {
+	if path == "" {
+		return a.writeExport(os.Stdout)
 	}
-	return "http://" + addr
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := a.writeExport(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

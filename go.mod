@@ -2,7 +2,10 @@ module github.com/Chidi09/nextgin
 
 go 1.27.3
 
-require github.com/gin-gonic/gin v1.12.0
+require (
+	github.com/gin-gonic/gin v1.12.0
+	github.com/syumai/workers-go v0.36.0
+)
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect

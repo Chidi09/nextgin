@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
 	"github.com/Chidi09/nextgin"
+	"github.com/gin-gonic/gin"
 )
 
 type Todo struct {
@@ -70,15 +72,26 @@ func main() {
 	}
 
 	todos := newStore()
+	var heartbeats atomic.Int64
+	app.Cron("heartbeat", "* * * * *", func(c *gin.Context) {
+		heartbeats.Add(1)
+		c.Status(http.StatusNoContent)
+	})
+
 	api := app.Router.Group("/api")
 	api.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	api.GET("/heartbeat", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": heartbeats.Load()}) })
 	api.GET("/todos", func(c *gin.Context) { c.JSON(http.StatusOK, todos.list()) })
 	api.POST("/todos", func(c *gin.Context) {
 		var body struct {
-			Title string `json:"title" binding:"required"`
+			Title string `json:"title"`
 		}
-		if err := c.ShouldBindJSON(&body); err != nil {
+		if err := nextgin.BindJSON(c, &body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(body.Title) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "title is required"})
 			return
 		}
 		c.JSON(http.StatusCreated, todos.add(body.Title))
@@ -88,7 +101,7 @@ func main() {
 		var body struct {
 			Done bool `json:"done"`
 		}
-		if err != nil || c.ShouldBindJSON(&body) != nil {
+		if err != nil || nextgin.BindJSON(c, &body) != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
 			return
 		}

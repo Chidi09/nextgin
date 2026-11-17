@@ -1,0 +1,476 @@
+package nextgin
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+func newTestApp() *App {
+	return &App{
+		Router: gin.New(),
+		cfg:    Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
+	}
+}
+
+func TestDetectTarget(t *testing.T) {
+	cases := []struct {
+		name       string
+		targetEnv  string
+		vercelEnv  string
+		want       TargetKind
+		wantErrStr string
+	}{
+		{name: "default selfhost", want: TargetSelfhost},
+		{name: "explicit selfhost", targetEnv: "selfhost", want: TargetSelfhost},
+		{name: "explicit vercel", targetEnv: "vercel", want: TargetVercel},
+		{name: "explicit cloudflare", targetEnv: "cloudflare", want: TargetCloudflare},
+		{name: "explicit backend", targetEnv: "backend", want: TargetBackend},
+		{name: "vercel env", vercelEnv: "1", want: TargetVercel},
+		{name: "NEXTGIN_TARGET overrides VERCEL", targetEnv: "selfhost", vercelEnv: "1", want: TargetSelfhost},
+		{name: "VERCEL non-1 ignored", vercelEnv: "0", want: TargetSelfhost},
+		{name: "invalid NEXTGIN_TARGET", targetEnv: "fly", wantErrStr: `nextgin: unknown NEXTGIN_TARGET "fly"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(TargetEnv, tc.targetEnv)
+			t.Setenv("VERCEL", tc.vercelEnv)
+
+			got, err := DetectTarget()
+			if tc.wantErrStr != "" {
+				if err == nil || err.Error() != tc.wantErrStr {
+					t.Fatalf("DetectTarget() err = %v, want %q", err, tc.wantErrStr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DetectTarget() unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("DetectTarget() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCronRegistrationPanics(t *testing.T) {
+	cases := []struct {
+		name     string
+		jobName  string
+		schedule string
+		handlers []gin.HandlerFunc
+		setup    func(a *App)
+	}{
+		{name: "uppercase", jobName: "Bad", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{name: "empty", jobName: "", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{name: "leading hyphen", jobName: "-x", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{name: "64 chars", jobName: strings.Repeat("a", 64), schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{
+			name:     "duplicate name",
+			jobName:  "dup",
+			schedule: "* * * * *",
+			handlers: []gin.HandlerFunc{func(c *gin.Context) {}},
+			setup:    func(a *App) { a.Cron("dup", "* * * * *", func(c *gin.Context) {}) },
+		},
+		{name: "bad schedule", jobName: "bad_sched", schedule: "not a cron", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{name: "no handlers", jobName: "no_handler", schedule: "* * * * *", handlers: nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp()
+			if tc.setup != nil {
+				tc.setup(app)
+			}
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected panic, got nil")
+				}
+				msg, ok := r.(string)
+				if !ok {
+					t.Fatalf("expected string panic, got %T (%v)", r, r)
+				}
+				if !strings.HasPrefix(msg, "nextgin: cron job") {
+					t.Fatalf("panic %q does not start with %q", msg, "nextgin: cron job")
+				}
+				if !strings.Contains(msg, tc.jobName) {
+					t.Fatalf("panic %q does not contain job name %q", msg, tc.jobName)
+				}
+			}()
+			app.Cron(tc.jobName, tc.schedule, tc.handlers...)
+		})
+	}
+}
+
+func TestCronJobsCopyAndOrder(t *testing.T) {
+	app := newTestApp()
+	app.Cron("first-job", "0 1 * * *", func(c *gin.Context) {})
+	app.Cron("second_job", "0 2 * * *", func(c *gin.Context) {})
+
+	jobs := app.CronJobs()
+	if len(jobs) != 2 || jobs[0].Name != "first-job" || jobs[1].Name != "second_job" {
+		t.Fatalf("unexpected jobs: %+v", jobs)
+	}
+	jobs[0].Name = "mutated"
+	if app.CronJobs()[0].Name != "first-job" {
+		t.Fatal("CronJobs() did not return a defensive copy")
+	}
+}
+
+func TestCronAuth(t *testing.T) {
+	app := newTestApp()
+	app.Cron("cleanup", "*/5 * * * *", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	reqDo := func(method, auth string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/_nextgin/cron/cleanup", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		app.Router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	assertUnauthorized := func(t *testing.T, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", rec.Code)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("invalid json body %q: %v", rec.Body.String(), err)
+		}
+		if body["error"] != "unauthorized" {
+			t.Fatalf("body = %v, want error=unauthorized", body)
+		}
+	}
+
+	t.Run("no header", func(t *testing.T) {
+		assertUnauthorized(t, reqDo("POST", ""))
+	})
+
+	t.Run("wrong token", func(t *testing.T) {
+		assertUnauthorized(t, reqDo("POST", "Bearer wrong"))
+	})
+
+	t.Run("internal token GET and POST", func(t *testing.T) {
+		tok := "Bearer " + getInternalToken()
+		for _, method := range []string{"GET", "POST"} {
+			rec := reqDo(method, tok)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s with internal token: status = %d, want 200", method, rec.Code)
+			}
+		}
+	})
+
+	t.Run("CRON_SECRET match", func(t *testing.T) {
+		t.Setenv(CronSecretEnv, "s3")
+		rec := reqDo("GET", "Bearer s3")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("empty CRON_SECRET rejects empty bearer", func(t *testing.T) {
+		t.Setenv(CronSecretEnv, "")
+		assertUnauthorized(t, reqDo("POST", "Bearer "))
+	})
+}
+
+func TestInvokeJob(t *testing.T) {
+	app := newTestApp()
+	var seenHeader string
+	app.Cron("job-204", "* * * * *", func(c *gin.Context) {
+		seenHeader = c.GetHeader("X-Nextgin-Cron")
+		c.Status(http.StatusNoContent)
+	})
+	app.Cron("job-500", "* * * * *", func(c *gin.Context) {
+		c.Status(http.StatusInternalServerError)
+	})
+
+	jobs := app.CronJobs()
+	if status := app.invokeJob(context.Background(), jobs[0]); status != http.StatusNoContent {
+		t.Fatalf("invokeJob(job-204) = %d, want 204", status)
+	}
+	if seenHeader != "job-204" {
+		t.Fatalf("X-Nextgin-Cron = %q, want %q", seenHeader, "job-204")
+	}
+	if status := app.invokeJob(context.Background(), jobs[1]); status != http.StatusInternalServerError {
+		t.Fatalf("invokeJob(job-500) = %d, want 500", status)
+	}
+}
+
+func TestExport(t *testing.T) {
+	app := newTestApp()
+	app.Router.POST("/api/todos", func(c *gin.Context) {})
+	app.Router.GET("/api/todos", func(c *gin.Context) {})
+	app.Router.GET("/api/health", func(c *gin.Context) {})
+	app.Router.GET("/_nextgin/internal", func(c *gin.Context) {})
+	app.Cron("weekday-report", "0 9 * * 1-5", func(c *gin.Context) {})
+
+	exp := app.Export()
+	if exp.Version != ExportVersion {
+		t.Fatalf("Version = %d, want %d", exp.Version, ExportVersion)
+	}
+	wantRoutes := []ExportRoute{
+		{Method: "GET", Path: "/api/health"},
+		{Method: "GET", Path: "/api/todos"},
+		{Method: "POST", Path: "/api/todos"},
+	}
+	if len(exp.Routes) != len(wantRoutes) {
+		t.Fatalf("Routes = %+v, want %+v", exp.Routes, wantRoutes)
+	}
+	for i := range wantRoutes {
+		if exp.Routes[i] != wantRoutes[i] {
+			t.Fatalf("Routes[%d] = %+v, want %+v", i, exp.Routes[i], wantRoutes[i])
+		}
+	}
+	if len(exp.Crons) != 1 {
+		t.Fatalf("Crons = %+v, want 1 item", exp.Crons)
+	}
+	gotCron := exp.Crons[0]
+	if gotCron.Name != "weekday-report" ||
+		gotCron.Schedule != "0 9 * * 1-5" ||
+		gotCron.Cloudflare != "0 9 * * 2,3,4,5,6" ||
+		gotCron.Path != "/_nextgin/cron/weekday-report" ||
+		gotCron.RunsPerDayMax != 1 {
+		t.Fatalf("unexpected Cron export: %+v", gotCron)
+	}
+}
+
+func TestExportEmptyEncodesArrays(t *testing.T) {
+	app := newTestApp()
+	var buf bytes.Buffer
+	if err := app.writeExport(&buf); err != nil {
+		t.Fatalf("writeExport: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"routes": []`) {
+		t.Fatalf("expected empty routes array in:\n%s", out)
+	}
+	if !strings.Contains(out, `"crons": []`) {
+		t.Fatalf("expected empty crons array in:\n%s", out)
+	}
+}
+
+func TestSchedulerRunsAndOverlap(t *testing.T) {
+	origNow := schedulerNow
+	origNext := schedulerNext
+	t.Cleanup(func() {
+		schedulerNow = origNow
+		schedulerNext = origNext
+	})
+
+	schedulerNext = func(_ *Schedule, after time.Time) time.Time {
+		return after.Add(30 * time.Millisecond)
+	}
+
+	t.Run("fires repeatedly", func(t *testing.T) {
+		app := newTestApp()
+		var runs atomic.Int32
+		app.Cron("tick", "* * * * *", func(c *gin.Context) {
+			runs.Add(1)
+			c.Status(http.StatusOK)
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		wait := app.startScheduler(ctx)
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+		wait(time.Second)
+
+		if got := runs.Load(); got < 2 {
+			t.Fatalf("runs = %d, want >= 2", got)
+		}
+	})
+
+	t.Run("skips overlapping runs", func(t *testing.T) {
+		app := newTestApp()
+		var entered atomic.Int32
+		started := make(chan struct{})
+		release := make(chan struct{})
+
+		app.Cron("slow", "* * * * *", func(c *gin.Context) {
+			if entered.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			c.Status(http.StatusOK)
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		wait := app.startScheduler(ctx)
+
+		<-started
+		// Wait long enough for several 30ms ticks to be skipped while blocked.
+		time.Sleep(150 * time.Millisecond)
+		if got := entered.Load(); got != 1 {
+			close(release)
+			cancel()
+			wait(time.Second)
+			t.Fatalf("entered = %d while blocked, want 1", got)
+		}
+
+		cancel()
+		close(release)
+		waitDone := make(chan struct{})
+		go func() {
+			wait(time.Second)
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(time.Second):
+			t.Fatal("wait did not return after releasing blocked job")
+		}
+	})
+}
+
+func TestSchedulerNoDoubleFireOnClockSlew(t *testing.T) {
+	origNow := schedulerNow
+	origNext := schedulerNext
+	t.Cleanup(func() {
+		schedulerNow = origNow
+		schedulerNext = origNext
+	})
+
+	minute := time.Date(2026, 1, 1, 12, 1, 0, 0, time.UTC)
+	var calls atomic.Int32
+	schedulerNow = func() time.Time {
+		if calls.Add(1) <= 2 {
+			return minute.Add(-10 * time.Millisecond)
+		}
+		return minute.Add(-1 * time.Millisecond)
+	}
+	schedulerNext = func(s *Schedule, after time.Time) time.Time { return s.Next(after) }
+
+	app := newTestApp()
+	var runs atomic.Int32
+	firstRun := make(chan struct{})
+	app.Cron("slew", "* * * * *", func(c *gin.Context) {
+		if runs.Add(1) == 1 {
+			close(firstRun)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := app.startScheduler(ctx)
+
+	select {
+	case <-firstRun:
+	case <-time.After(time.Second):
+		cancel()
+		wait(time.Second)
+		t.Fatal("timed out waiting for first cron fire")
+	}
+
+	// Give the loop plenty of time to re-fire if it were vulnerable to 1ms slew.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	wait(time.Second)
+
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("runs = %d, want 1 (same minute fired more than once)", got)
+	}
+}
+
+func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
+	t.Run("export mode", func(t *testing.T) {
+		t.Setenv(ExportEnv, "1")
+		app, err := New("/nonexistent-dir-for-export-test", Config{Router: gin.New()})
+		if err != nil {
+			t.Fatalf("New in export mode failed: %v", err)
+		}
+		if app.Frontend != nil {
+			t.Fatal("expected nil Frontend in export mode")
+		}
+		app.MountFrontend()
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("Handler() status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("vercel target", func(t *testing.T) {
+		t.Setenv(TargetEnv, string(TargetVercel))
+		app, err := New("/nonexistent-dir-for-vercel-test", Config{Router: gin.New()})
+		if err != nil {
+			t.Fatalf("New in vercel target failed: %v", err)
+		}
+		if app.Frontend != nil {
+			t.Fatal("expected nil Frontend on vercel target")
+		}
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close() failed: %v", err)
+		}
+	})
+
+	t.Run("cloudflare target on non-wasm", func(t *testing.T) {
+		t.Setenv(TargetEnv, string(TargetCloudflare))
+		_, err := New("/nonexistent", Config{Router: gin.New()})
+		if err == nil || !strings.Contains(err.Error(), "GOOS=js GOARCH=wasm") {
+			t.Fatalf("expected cloudflare wasm error, got %v", err)
+		}
+	})
+}
+
+// Regression: cron handlers that stream (c.Stream / SSE) must not panic on the
+// synthetic in-process writer, which needs http.Flusher and http.CloseNotifier.
+func TestInvokeJobStreamingHandler(t *testing.T) {
+	a := &App{Router: gin.New()}
+	a.Cron("stream", "* * * * *", func(c *gin.Context) {
+		c.Stream(func(w io.Writer) bool {
+			_, _ = w.Write([]byte("x"))
+			return false
+		})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if st := a.invokeJob(ctx, a.CronJobs()[0]); st != http.StatusOK {
+		t.Fatalf("status = %d, want 200", st)
+	}
+}
+
+// Regression: the CLI reads the export from NEXTGIN_EXPORT_FILE so that stdout
+// noise (gin debug output printed before nextgin.New, user logging) cannot
+// corrupt it.
+func TestExportToFile(t *testing.T) {
+	a := &App{Router: gin.New()}
+	a.Router.GET("/api/x", func(c *gin.Context) {})
+	a.Cron("nightly", "0 3 * * *", func(c *gin.Context) {})
+	path := t.TempDir() + "/export.json"
+	if err := a.exportTo(path); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Export
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("export file is not JSON: %v\n%s", err, b)
+	}
+	if len(got.Routes) != 1 || len(got.Crons) != 1 || got.Crons[0].Name != "nightly" {
+		t.Fatalf("unexpected export: %+v", got)
+	}
+}
