@@ -427,10 +427,14 @@ Size: the spike (nextgin + pgx + go-redis, `-tags nomsgpack`, stripped) is
 warning. How much is pgx vs go-redis was not measured, and the cold-start
 CPU of a 25 MB module was not measured.
 
-Follow-up: a small portable helper in nextgin (`nextgin.DialContext`:
-`sockets.Connect` with the detached context on js/wasm, `net.Dialer`
-elsewhere, plus a host-passthrough lookup) so the same pgx/go-redis code
-runs on every target.
+Helper (implemented): `nextgin.DialContext` and `nextgin.LookupHost`
+(`dial*.go`). On js/wasm `DialContext` is `sockets.Connect` with the
+detached context; elsewhere it is a plain `net.Dialer`. Same user code on
+every target: `cfg.DialFunc = nextgin.DialContext`, `cfg.LookupFunc =
+nextgin.LookupHost` (pgx), `Options.Dialer = nextgin.DialContext`
+(go-redis). Verified: native tests (echo, cancel-after-dial, rejection of
+non-tcp networks) and the wasm spike re-run on the helper under
+`wrangler dev` (Postgres insert+count, Redis INCR, counters matched).
 
 ### 9.8 Not in scope
 
