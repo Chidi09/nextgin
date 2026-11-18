@@ -3,14 +3,12 @@ package nextgin
 import (
 	"net/http"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 )
 
 const corsPanicMsg = `nextgin: CORS needs an explicit origin allow-list ("*" is not allowed with credentials)`
 
 // CORS returns middleware for browsers that call the backend directly (SPEC §9.3 direct mode).
-func CORS(origins ...string) gin.HandlerFunc {
+func CORS(origins ...string) Middleware {
 	if len(origins) == 0 {
 		panic(corsPanicMsg)
 	}
@@ -23,41 +21,43 @@ func CORS(origins ...string) gin.HandlerFunc {
 		allowed[trimmed] = struct{}{}
 	}
 
-	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if origin == "" {
-			c.Next()
-			return
-		}
-
-		c.Writer.Header().Add("Vary", "Origin")
-
-		isPreflight := c.Request.Method == http.MethodOptions && c.GetHeader("Access-Control-Request-Method") != ""
-		_, ok := allowed[origin]
-		if !ok {
-			if isPreflight {
-				c.AbortWithStatus(http.StatusForbidden)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				next.ServeHTTP(w, r)
 				return
 			}
-			c.Next()
-			return
-		}
 
-		c.Header("Access-Control-Allow-Origin", origin)
-		c.Header("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
 
-		if isPreflight {
-			allowHeaders := c.GetHeader("Access-Control-Request-Headers")
-			if allowHeaders == "" {
-				allowHeaders = "Content-Type, Authorization"
+			isPreflight := r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+			_, ok := allowed[origin]
+			if !ok {
+				if isPreflight {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
 			}
-			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			c.Header("Access-Control-Allow-Headers", allowHeaders)
-			c.Header("Access-Control-Max-Age", "600")
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
 
-		c.Next()
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+			if isPreflight {
+				allowHeaders := r.Header.Get("Access-Control-Request-Headers")
+				if allowHeaders == "" {
+					allowHeaders = "Content-Type, Authorization"
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
+				w.Header().Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
 	}
 }

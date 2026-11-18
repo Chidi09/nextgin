@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-
-	"github.com/gin-gonic/gin"
 )
 
 // TargetKind identifies the deployment target for a nextgin application.
@@ -59,18 +57,6 @@ func DetectTarget() (TargetKind, error) {
 
 func exportMode() bool {
 	return os.Getenv(ExportEnv) == "1"
-}
-
-// applyGinMode switches Gin to release mode on the vercel, cloudflare, and
-// backend targets unless the GIN_MODE environment variable is set explicitly.
-// Platform deploys are always production; selfhost keeps Gin's default.
-func applyGinMode(target TargetKind) {
-	if os.Getenv(gin.EnvGinMode) != "" {
-		return
-	}
-	if target == TargetVercel || target == TargetCloudflare || target == TargetBackend {
-		gin.SetMode(gin.ReleaseMode)
-	}
 }
 
 func (a *App) schedulerEnabled() bool {

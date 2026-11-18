@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestCORSPanics(t *testing.T) {
@@ -147,12 +145,12 @@ func TestCORS(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := gin.New()
+			r := NewRouter()
 			r.Use(CORS(tc.configuredOrigins...))
 			called := false
-			handler := func(c *gin.Context) {
+			handler := func(w http.ResponseWriter, req *http.Request) {
 				called = true
-				c.Status(http.StatusOK)
+				w.WriteHeader(http.StatusOK)
 			}
 			r.GET("/api/test", handler)
 			r.OPTIONS("/api/test", handler)

@@ -13,13 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 func newTestApp() *App {
 	return &App{
-		Router: gin.New(),
+		Router: NewRouter(),
 		cfg:    Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
 	}
 }
@@ -66,26 +64,27 @@ func TestDetectTarget(t *testing.T) {
 }
 
 func TestCronRegistrationPanics(t *testing.T) {
+	noop := func(w http.ResponseWriter, r *http.Request) {}
 	cases := []struct {
 		name     string
 		jobName  string
 		schedule string
-		handlers []gin.HandlerFunc
+		handler  http.HandlerFunc
 		setup    func(a *App)
 	}{
-		{name: "uppercase", jobName: "Bad", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
-		{name: "empty", jobName: "", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
-		{name: "leading hyphen", jobName: "-x", schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
-		{name: "64 chars", jobName: strings.Repeat("a", 64), schedule: "* * * * *", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
+		{name: "uppercase", jobName: "Bad", schedule: "* * * * *", handler: noop},
+		{name: "empty", jobName: "", schedule: "* * * * *", handler: noop},
+		{name: "leading hyphen", jobName: "-x", schedule: "* * * * *", handler: noop},
+		{name: "64 chars", jobName: strings.Repeat("a", 64), schedule: "* * * * *", handler: noop},
 		{
 			name:     "duplicate name",
 			jobName:  "dup",
 			schedule: "* * * * *",
-			handlers: []gin.HandlerFunc{func(c *gin.Context) {}},
-			setup:    func(a *App) { a.Cron("dup", "* * * * *", func(c *gin.Context) {}) },
+			handler:  noop,
+			setup:    func(a *App) { a.Cron("dup", "* * * * *", noop) },
 		},
-		{name: "bad schedule", jobName: "bad_sched", schedule: "not a cron", handlers: []gin.HandlerFunc{func(c *gin.Context) {}}},
-		{name: "no handlers", jobName: "no_handler", schedule: "* * * * *", handlers: nil},
+		{name: "bad schedule", jobName: "bad_sched", schedule: "not a cron", handler: noop},
+		{name: "nil handler", jobName: "no_handler", schedule: "* * * * *", handler: nil},
 	}
 
 	for _, tc := range cases {
@@ -110,15 +109,16 @@ func TestCronRegistrationPanics(t *testing.T) {
 					t.Fatalf("panic %q does not contain job name %q", msg, tc.jobName)
 				}
 			}()
-			app.Cron(tc.jobName, tc.schedule, tc.handlers...)
+			app.Cron(tc.jobName, tc.schedule, tc.handler)
 		})
 	}
 }
 
 func TestCronJobsCopyAndOrder(t *testing.T) {
+	noop := func(w http.ResponseWriter, r *http.Request) {}
 	app := newTestApp()
-	app.Cron("first-job", "0 1 * * *", func(c *gin.Context) {})
-	app.Cron("second_job", "0 2 * * *", func(c *gin.Context) {})
+	app.Cron("first-job", "0 1 * * *", noop)
+	app.Cron("second_job", "0 2 * * *", noop)
 
 	jobs := app.CronJobs()
 	if len(jobs) != 2 || jobs[0].Name != "first-job" || jobs[1].Name != "second_job" {
@@ -132,8 +132,8 @@ func TestCronJobsCopyAndOrder(t *testing.T) {
 
 func TestCronAuth(t *testing.T) {
 	app := newTestApp()
-	app.Cron("cleanup", "*/5 * * * *", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+	app.Cron("cleanup", "*/5 * * * *", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 
 	reqDo := func(method, auth string) *httptest.ResponseRecorder {
@@ -195,12 +195,12 @@ func TestCronAuth(t *testing.T) {
 func TestInvokeJob(t *testing.T) {
 	app := newTestApp()
 	var seenHeader string
-	app.Cron("job-204", "* * * * *", func(c *gin.Context) {
-		seenHeader = c.GetHeader("X-Nextgin-Cron")
-		c.Status(http.StatusNoContent)
+	app.Cron("job-204", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get("X-Nextgin-Cron")
+		w.WriteHeader(http.StatusNoContent)
 	})
-	app.Cron("job-500", "* * * * *", func(c *gin.Context) {
-		c.Status(http.StatusInternalServerError)
+	app.Cron("job-500", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
 	})
 
 	jobs := app.CronJobs()
@@ -216,12 +216,13 @@ func TestInvokeJob(t *testing.T) {
 }
 
 func TestExport(t *testing.T) {
+	noop := func(w http.ResponseWriter, r *http.Request) {}
 	app := newTestApp()
-	app.Router.POST("/api/todos", func(c *gin.Context) {})
-	app.Router.GET("/api/todos", func(c *gin.Context) {})
-	app.Router.GET("/api/health", func(c *gin.Context) {})
-	app.Router.GET("/_nextgin/internal", func(c *gin.Context) {})
-	app.Cron("weekday-report", "0 9 * * 1-5", func(c *gin.Context) {})
+	app.Router.POST("/api/todos", noop)
+	app.Router.GET("/api/todos", noop)
+	app.Router.GET("/api/health", noop)
+	app.Router.GET("/_nextgin/internal", noop)
+	app.Cron("weekday-report", "0 9 * * 1-5", noop)
 
 	exp := app.Export()
 	if exp.Version != ExportVersion {
@@ -283,9 +284,9 @@ func TestSchedulerRunsAndOverlap(t *testing.T) {
 	t.Run("fires repeatedly", func(t *testing.T) {
 		app := newTestApp()
 		var runs atomic.Int32
-		app.Cron("tick", "* * * * *", func(c *gin.Context) {
+		app.Cron("tick", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
 			runs.Add(1)
-			c.Status(http.StatusOK)
+			w.WriteHeader(http.StatusOK)
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -305,12 +306,12 @@ func TestSchedulerRunsAndOverlap(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 
-		app.Cron("slow", "* * * * *", func(c *gin.Context) {
+		app.Cron("slow", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
 			if entered.Add(1) == 1 {
 				close(started)
 			}
 			<-release
-			c.Status(http.StatusOK)
+			w.WriteHeader(http.StatusOK)
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -362,11 +363,11 @@ func TestSchedulerNoDoubleFireOnClockSlew(t *testing.T) {
 	app := newTestApp()
 	var runs atomic.Int32
 	firstRun := make(chan struct{})
-	app.Cron("slew", "* * * * *", func(c *gin.Context) {
+	app.Cron("slew", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
 		if runs.Add(1) == 1 {
 			close(firstRun)
 		}
-		c.Status(http.StatusOK)
+		w.WriteHeader(http.StatusOK)
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -393,7 +394,7 @@ func TestSchedulerNoDoubleFireOnClockSlew(t *testing.T) {
 func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
 	t.Run("export mode", func(t *testing.T) {
 		t.Setenv(ExportEnv, "1")
-		app, err := New("/nonexistent-dir-for-export-test", Config{Router: gin.New()})
+		app, err := New("/nonexistent-dir-for-export-test", Config{Router: NewRouter()})
 		if err != nil {
 			t.Fatalf("New in export mode failed: %v", err)
 		}
@@ -413,7 +414,7 @@ func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
 
 	t.Run("vercel target", func(t *testing.T) {
 		t.Setenv(TargetEnv, string(TargetVercel))
-		app, err := New("/nonexistent-dir-for-vercel-test", Config{Router: gin.New()})
+		app, err := New("/nonexistent-dir-for-vercel-test", Config{Router: NewRouter()})
 		if err != nil {
 			t.Fatalf("New in vercel target failed: %v", err)
 		}
@@ -427,22 +428,20 @@ func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
 
 	t.Run("cloudflare target on non-wasm", func(t *testing.T) {
 		t.Setenv(TargetEnv, string(TargetCloudflare))
-		_, err := New("/nonexistent", Config{Router: gin.New()})
+		_, err := New("/nonexistent", Config{Router: NewRouter()})
 		if err == nil || !strings.Contains(err.Error(), "GOOS=js GOARCH=wasm") {
 			t.Fatalf("expected cloudflare wasm error, got %v", err)
 		}
 	})
 }
 
-// Regression: cron handlers that stream (c.Stream / SSE) must not panic on the
-// synthetic in-process writer, which needs http.Flusher and http.CloseNotifier.
+// Regression: cron handlers that flush (streaming / SSE) must not panic on the
+// synthetic in-process writer.
 func TestInvokeJobStreamingHandler(t *testing.T) {
-	a := &App{Router: gin.New()}
-	a.Cron("stream", "* * * * *", func(c *gin.Context) {
-		c.Stream(func(w io.Writer) bool {
-			_, _ = w.Write([]byte("x"))
-			return false
-		})
+	a := &App{Router: NewRouter()}
+	a.Cron("stream", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("x"))
+		w.(http.Flusher).Flush()
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -452,12 +451,12 @@ func TestInvokeJobStreamingHandler(t *testing.T) {
 }
 
 // Regression: the CLI reads the export from NEXTGIN_EXPORT_FILE so that stdout
-// noise (gin debug output printed before nextgin.New, user logging) cannot
-// corrupt it.
+// noise cannot corrupt it.
 func TestExportToFile(t *testing.T) {
-	a := &App{Router: gin.New()}
-	a.Router.GET("/api/x", func(c *gin.Context) {})
-	a.Cron("nightly", "0 3 * * *", func(c *gin.Context) {})
+	noop := func(w http.ResponseWriter, r *http.Request) {}
+	a := &App{Router: NewRouter()}
+	a.Router.GET("/api/x", noop)
+	a.Cron("nightly", "0 3 * * *", noop)
 	path := t.TempDir() + "/export.json"
 	if err := a.exportTo(path); err != nil {
 		t.Fatal(err)

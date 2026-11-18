@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestRequireInternal(t *testing.T) {
@@ -91,12 +89,12 @@ func TestRequireInternal(t *testing.T) {
 				}
 			}
 
-			r := gin.New()
+			r := NewRouter()
 			called := false
-			r.GET("/internal", RequireInternal(), func(c *gin.Context) {
+			r.GET("/internal", func(w http.ResponseWriter, req *http.Request) {
 				called = true
-				c.Status(http.StatusOK)
-			})
+				w.WriteHeader(http.StatusOK)
+			}, RequireInternal())
 
 			req := httptest.NewRequest(http.MethodGet, "/internal", nil)
 			if tc.setHeader {

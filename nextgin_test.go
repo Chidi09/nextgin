@@ -19,8 +19,6 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 // ---- fake worker (the test binary re-executed) ----------------------------
@@ -32,7 +30,6 @@ func TestMain(m *testing.M) {
 		runFakeWorker()
 		return
 	}
-	gin.SetMode(gin.TestMode)
 	os.Exit(m.Run())
 }
 
@@ -435,9 +432,9 @@ func TestPoolStartupTimeout(t *testing.T) {
 	}
 }
 
-// ---- Gin integration --------------------------------------------------------
+// ---- Router integration -----------------------------------------------------
 
-func TestGinMountStatusAndStreaming(t *testing.T) {
+func TestRouterMountStatusAndStreaming(t *testing.T) {
 	assets := testAssets()
 	m, _ := LoadManifest(assets)
 	m.Bypass = nil
@@ -446,8 +443,10 @@ func TestGinMountStatusAndStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{Router: gin.New(), Frontend: &Frontend{Handler: h, Manifest: m}}
-	app.Router.GET("/api/health", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+	app := &App{Router: NewRouter(), Frontend: &Frontend{Handler: h, Manifest: m}}
+	app.Router.GET("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
 	app.MountFrontend()
 	srv := httptest.NewServer(app.Router)
 	defer srv.Close()

@@ -11,7 +11,7 @@ import (
 // ExportVersion is the schema version emitted by App.Export.
 const ExportVersion = 1
 
-// ExportRoute describes a single HTTP route registered on the Gin router.
+// ExportRoute describes a single HTTP route registered on the Router.
 type ExportRoute struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`

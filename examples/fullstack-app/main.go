@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 
 	"github.com/Chidi09/nextgin"
-	"github.com/gin-gonic/gin"
 )
 
 type Todo struct {
@@ -26,7 +25,7 @@ type store struct {
 }
 
 func newStore() *store {
-	return &store{nextID: 3, todos: []Todo{{1, "Serve Next.js from Go", true}, {2, "Write the Gin API", false}}}
+	return &store{nextID: 3, todos: []Todo{{1, "Serve Next.js from Go", true}, {2, "Write the Go API", false}}}
 }
 
 func (s *store) list() []Todo {
@@ -73,47 +72,53 @@ func main() {
 
 	todos := newStore()
 	var heartbeats atomic.Int64
-	app.Cron("heartbeat", "* * * * *", func(c *gin.Context) {
+	app.Cron("heartbeat", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
 		heartbeats.Add(1)
-		c.Status(http.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	api := app.Router.Group("/api")
-	api.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
-	api.GET("/heartbeat", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"count": heartbeats.Load()}) })
-	api.GET("/todos", func(c *gin.Context) { c.JSON(http.StatusOK, todos.list()) })
-	api.POST("/todos", func(c *gin.Context) {
+	api.GET("/health", func(w http.ResponseWriter, r *http.Request) {
+		nextgin.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	api.GET("/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		nextgin.WriteJSON(w, http.StatusOK, map[string]int64{"count": heartbeats.Load()})
+	})
+	api.GET("/todos", func(w http.ResponseWriter, r *http.Request) {
+		nextgin.WriteJSON(w, http.StatusOK, todos.list())
+	})
+	api.POST("/todos", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Title string `json:"title"`
 		}
-		if err := nextgin.BindJSON(c, &body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := nextgin.ReadJSON(r, &body); err != nil {
+			nextgin.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if strings.TrimSpace(body.Title) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "title is required"})
+			nextgin.WriteError(w, http.StatusBadRequest, "title is required")
 			return
 		}
-		c.JSON(http.StatusCreated, todos.add(body.Title))
+		nextgin.WriteJSON(w, http.StatusCreated, todos.add(body.Title))
 	})
-	api.PATCH("/todos/:id", func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
+	api.PATCH("/todos/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
 		var body struct {
 			Done bool `json:"done"`
 		}
-		if err != nil || nextgin.BindJSON(c, &body) != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+		if err != nil || nextgin.ReadJSON(r, &body) != nil {
+			nextgin.WriteError(w, http.StatusBadRequest, "bad request")
 			return
 		}
 		t, ok := todos.setDone(id, body.Done)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			nextgin.WriteError(w, http.StatusNotFound, "not found")
 			return
 		}
-		c.JSON(http.StatusOK, t)
+		nextgin.WriteJSON(w, http.StatusOK, t)
 	})
 
-	// Everything Gin doesn't match: static assets, prerendered pages, and
+	// Everything Router doesn't match: static assets, prerendered pages, and
 	// SSR/RSC/Server Actions streamed from the Next.js workers.
 	app.MountFrontend()
 

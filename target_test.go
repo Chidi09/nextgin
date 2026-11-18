@@ -3,81 +3,8 @@ package nextgin
 import (
 	"context"
 	"net/http"
-	"os"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
-
-func TestApplyGinMode(t *testing.T) {
-	t.Cleanup(func() {
-		gin.SetMode(gin.DebugMode)
-	})
-
-	cases := []struct {
-		name     string
-		target   TargetKind
-		ginMode  string
-		setEnv   bool
-		wantMode string
-	}{
-		{
-			name:     "vercel with unset GIN_MODE",
-			target:   TargetVercel,
-			wantMode: gin.ReleaseMode,
-		},
-		{
-			name:     "cloudflare with unset GIN_MODE",
-			target:   TargetCloudflare,
-			wantMode: gin.ReleaseMode,
-		},
-		{
-			name:     "backend with unset GIN_MODE",
-			target:   TargetBackend,
-			wantMode: gin.ReleaseMode,
-		},
-		{
-			name:     "selfhost with unset GIN_MODE",
-			target:   TargetSelfhost,
-			wantMode: gin.DebugMode,
-		},
-		{
-			name:     "backend with GIN_MODE=debug",
-			target:   TargetBackend,
-			ginMode:  gin.DebugMode,
-			setEnv:   true,
-			wantMode: gin.DebugMode,
-		},
-		{
-			name:     "vercel with GIN_MODE=debug",
-			target:   TargetVercel,
-			ginMode:  gin.DebugMode,
-			setEnv:   true,
-			wantMode: gin.DebugMode,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gin.SetMode(gin.DebugMode)
-			t.Cleanup(func() {
-				gin.SetMode(gin.DebugMode)
-			})
-			if tc.setEnv {
-				t.Setenv(gin.EnvGinMode, tc.ginMode)
-			} else {
-				t.Setenv(gin.EnvGinMode, "")
-				if err := os.Unsetenv(gin.EnvGinMode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			applyGinMode(tc.target)
-			if got := gin.Mode(); got != tc.wantMode {
-				t.Fatalf("gin.Mode() = %q, want %q", got, tc.wantMode)
-			}
-		})
-	}
-}
 
 func TestSchedulerEnabled(t *testing.T) {
 	cases := []struct {
@@ -110,16 +37,9 @@ func TestSchedulerEnabled(t *testing.T) {
 }
 
 func TestBackendTargetSkipsFrontendAndRunsCron(t *testing.T) {
-	t.Cleanup(func() {
-		gin.SetMode(gin.DebugMode)
-	})
 	t.Setenv(TargetEnv, string(TargetBackend))
-	t.Setenv(gin.EnvGinMode, "")
-	if err := os.Unsetenv(gin.EnvGinMode); err != nil {
-		t.Fatal(err)
-	}
 
-	app, err := New("/does/not/exist", Config{Router: gin.New()})
+	app, err := New("/does/not/exist", Config{Router: NewRouter()})
 	if err != nil {
 		t.Fatalf("New on backend target failed: %v", err)
 	}
@@ -132,9 +52,9 @@ func TestBackendTargetSkipsFrontendAndRunsCron(t *testing.T) {
 	}
 
 	var ran bool
-	app.Cron("heartbeat", "* * * * *", func(c *gin.Context) {
+	app.Cron("heartbeat", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
 		ran = true
-		c.Status(http.StatusOK)
+		w.WriteHeader(http.StatusOK)
 	})
 	if st := app.invokeJob(context.Background(), app.CronJobs()[0]); st != http.StatusOK {
 		t.Fatalf("invokeJob status = %d, want 200", st)

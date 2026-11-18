@@ -1,17 +1,17 @@
 package nextgin
 
 import (
+	"net/http"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestJobsForCloudflareCron(t *testing.T) {
-	app := &App{Router: gin.New()}
-	app.Cron("first-weekday", "0 9 * * 1-5", func(c *gin.Context) {})
-	app.Cron("every-5m", "*/5 * * * *", func(c *gin.Context) {})
-	app.Cron("second-weekday", "0 9 * * 1-5", func(c *gin.Context) {})
-	app.Cron("sunday", "0 3 * * 0", func(c *gin.Context) {})
+	noop := func(w http.ResponseWriter, r *http.Request) {}
+	app := &App{Router: NewRouter()}
+	app.Cron("first-weekday", "0 9 * * 1-5", noop)
+	app.Cron("every-5m", "*/5 * * * *", noop)
+	app.Cron("second-weekday", "0 9 * * 1-5", noop)
+	app.Cron("sunday", "0 3 * * 0", noop)
 
 	jobs := app.CronJobs()
 

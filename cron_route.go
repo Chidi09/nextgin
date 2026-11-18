@@ -11,8 +11,6 @@ import (
 	"regexp"
 	"slices"
 	"sync"
-
-	"github.com/gin-gonic/gin"
 )
 
 // CronPathPrefix is the URL path prefix under which all cron job routes are registered.
@@ -48,8 +46,8 @@ func getInternalToken() string {
 
 // Cron registers a scheduled job on the App's Router under /_nextgin/cron/<name>.
 // It panics if name is invalid or already registered, if schedule fails to parse,
-// or if no handlers are provided.
-func (a *App) Cron(name, schedule string, handlers ...gin.HandlerFunc) {
+// or if handler is nil.
+func (a *App) Cron(name, schedule string, handler http.HandlerFunc, mw ...Middleware) {
 	if !cronNameRe.MatchString(name) {
 		panic(fmt.Sprintf("nextgin: cron job %q: invalid name (must match %s)", name, cronNameRe.String()))
 	}
@@ -60,17 +58,17 @@ func (a *App) Cron(name, schedule string, handlers ...gin.HandlerFunc) {
 	if err != nil {
 		panic(fmt.Sprintf("nextgin: cron job %q: %v", name, err))
 	}
-	if len(handlers) == 0 {
-		panic(fmt.Sprintf("nextgin: cron job %q: at least one handler is required", name))
+	if handler == nil {
+		panic(fmt.Sprintf("nextgin: cron job %q: handler is required", name))
 	}
 
 	path := CronPathPrefix + name
-	chain := make([]gin.HandlerFunc, 0, 1+len(handlers))
+	chain := make([]Middleware, 0, 1+len(mw))
 	chain = append(chain, cronAuth)
-	chain = append(chain, handlers...)
+	chain = append(chain, mw...)
 
-	a.Router.GET(path, chain...)
-	a.Router.POST(path, chain...)
+	a.Router.GET(path, handler, chain...)
+	a.Router.POST(path, handler, chain...)
 
 	if a.jobNames == nil {
 		a.jobNames = make(map[string]bool)
@@ -88,15 +86,19 @@ func (a *App) CronJobs() []CronJob {
 	return slices.Clone(a.jobs)
 }
 
-func cronAuth(c *gin.Context) {
-	auth := c.GetHeader("Authorization")
-	if constantTimeBearerMatch(auth, getInternalToken()) {
-		return
-	}
-	if secret := os.Getenv(CronSecretEnv); secret != "" && constantTimeBearerMatch(auth, secret) {
-		return
-	}
-	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+func cronAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if constantTimeBearerMatch(auth, getInternalToken()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if secret := os.Getenv(CronSecretEnv); secret != "" && constantTimeBearerMatch(auth, secret) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		WriteError(w, http.StatusUnauthorized, "unauthorized")
+	})
 }
 
 func constantTimeBearerMatch(header, token string) bool {
@@ -113,7 +115,6 @@ func (a *App) invokeJob(ctx context.Context, job CronJob) int {
 	req.Header.Set("X-Nextgin-Cron", job.Name)
 
 	w := &discardResponseWriter{
-		ctx:    ctx,
 		header: make(http.Header),
 		status: http.StatusOK,
 	}
@@ -122,7 +123,6 @@ func (a *App) invokeJob(ctx context.Context, job CronJob) int {
 }
 
 type discardResponseWriter struct {
-	ctx         context.Context
 	header      http.Header
 	status      int
 	wroteHeader bool
@@ -139,19 +139,8 @@ func (w *discardResponseWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Flush is a no-op; gin's Context.Stream / SSEvent require an http.Flusher.
+// Flush is a no-op so handlers that type-assert http.Flusher work cleanly.
 func (w *discardResponseWriter) Flush() {}
-
-// CloseNotify reports when the run's context ends; gin's Context.Stream
-// type-asserts http.CloseNotifier.
-func (w *discardResponseWriter) CloseNotify() <-chan bool {
-	ch := make(chan bool, 1)
-	go func() {
-		<-w.ctx.Done()
-		ch <- true
-	}()
-	return ch
-}
 
 func (w *discardResponseWriter) WriteHeader(statusCode int) {
 	if w.wroteHeader {

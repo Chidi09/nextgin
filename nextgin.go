@@ -6,7 +6,7 @@
 // workers over Unix domain sockets.
 //
 // The core is a plain http.Handler (see Frontend / Handler); App adds an
-// ergonomic Gin integration on top.
+// ergonomic stdlib net/http Router and cron scheduler on top.
 package nextgin
 
 import (
@@ -15,8 +15,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 // DevURLEnv points nextgin at a running `next dev` server. When set (as
@@ -67,16 +65,16 @@ type Config struct {
 	// DevURL proxies everything to a `next dev` server instead of using the
 	// build output. Defaults to $NEXTGIN_DEV_URL.
 	DevURL string
-	// Router is an existing Gin engine to use. Default gin.Default().
-	Router *gin.Engine
+	// Router is an existing Router to use. Default NewRouter() with Recovery.
+	Router *Router
 	// Logger receives runtime and worker logs. Default slog.Default().
 	Logger *slog.Logger
 }
 
-// App is the Gin integration: register API routes on Router, then call
+// App is the top-level integration: register API routes on Router, then call
 // MountFrontend so every unmatched request falls through to Next.js.
 type App struct {
-	Router   *gin.Engine
+	Router   *Router
 	Frontend *Frontend
 	cfg      Config
 	target   TargetKind
@@ -93,14 +91,8 @@ func New(dir string, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	applyGinMode(target)
 	var f *Frontend
-	if exportMode() {
-		// Export mode inspects Go routes and jobs without touching disk or
-		// booting workers. stdout must carry only the export JSON, so send
-		// gin's debug output (route listing, mode warnings) to stderr.
-		gin.DefaultWriter = os.Stderr
-	} else {
+	if !exportMode() {
 		f, err = initFrontend(dir, cfg, target)
 		if err != nil {
 			return nil, err
@@ -108,7 +100,8 @@ func New(dir string, cfg Config) (*App, error) {
 	}
 	r := cfg.Router
 	if r == nil {
-		r = gin.Default()
+		r = NewRouter()
+		r.Use(Recovery(cfg.loggerOrDefault()))
 	}
 	return &App{Router: r, Frontend: f, cfg: cfg, target: target}, nil
 }
@@ -122,13 +115,13 @@ func (a *App) Handler() http.Handler {
 	return a.Frontend
 }
 
-// MountFrontend routes every request Gin has no route for to Next.js, so
+// MountFrontend routes every request Router has no route for to Next.js, so
 // routes you register on Router (e.g. /api/*) always take priority.
 func (a *App) MountFrontend() {
 	if a.Frontend == nil {
 		return
 	}
-	a.Router.NoRoute(gin.WrapH(a.Frontend))
+	a.Router.setFallback(a.Frontend)
 }
 
 // Run serves on addr until SIGINT/SIGTERM, then drains in-flight requests
