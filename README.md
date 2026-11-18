@@ -168,9 +168,11 @@ secrets).
   deploy, no rollback command, and **no database backups**. Behind Caddy, set
   `TrustForwardedHeaders: true` in your `nextgin.Config`.
 
-Status: verified with `--local` on a Linux machine (first deploy, redeploy with
-data and passwords preserved, external database, Caddy HTTPS). Not yet run
-against a real VPS over SSH.
+Status: verified with `--local` (first deploy, redeploy with data and
+passwords preserved, external database, Caddy HTTPS) and over SSH into a Debian
+container (Docker install, root and sudo users, redeploy). Not yet run on a real
+internet-facing VPS or a systemd host. SSH runs with `BatchMode`, so connect to
+the server once with plain `ssh` first to accept its host key.
 
 ## Security notes
 

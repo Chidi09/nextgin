@@ -195,6 +195,13 @@ export function createSshTransport(o: SshTransportOptions): Transport {
         })
         ssh.on('close', (code) => {
           sshCode = code ?? 1
+          if (sshCode !== 0) {
+            // The remote load failed (for example the Docker daemon is not
+            // running). `docker save` would block forever writing into a pipe
+            // nobody reads, so stop it and report ssh's error now.
+            failOnce(new Error(`nextgin deploy: image upload failed: ${sshErr.trim() || `exit code ${sshCode}`}`))
+            return
+          }
           maybeFinish()
         })
       })
