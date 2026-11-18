@@ -138,4 +138,4 @@ go test -race -count=1 ./...
 npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 ```
 
-[docs/SPEC.md](docs/SPEC.md) is the design record with measurements and verification logs.
+[docs/COOKBOOK.md](docs/COOKBOOK.md) covers architecture, database/ORM patterns, auth, webhooks, and cron locking. [AGENTS.md](AGENTS.md) is the contributor & AI-agent guide. [docs/SPEC.md](docs/SPEC.md) is the design record.
