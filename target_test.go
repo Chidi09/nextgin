@@ -21,8 +21,6 @@ func TestSchedulerEnabled(t *testing.T) {
 		{name: "backend non-off", target: TargetBackend, schedulerEnv: "false", want: true},
 		{name: "vercel default", target: TargetVercel, want: false},
 		{name: "vercel off", target: TargetVercel, schedulerEnv: "off", want: false},
-		{name: "cloudflare default", target: TargetCloudflare, want: false},
-		{name: "cloudflare off", target: TargetCloudflare, schedulerEnv: "off", want: false},
 	}
 
 	for _, tc := range cases {

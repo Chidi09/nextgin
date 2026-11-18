@@ -198,26 +198,3 @@ func (s *Schedule) Next(after time.Time) time.Time {
 func (s *Schedule) RunsPerDayMax() int {
 	return s.minCount * s.hourCount
 }
-
-// CloudflareExpr returns the normalized cron expression with only the
-// day-of-week field rewritten to Cloudflare's 1-7 numbering (1 = Sunday).
-func (s *Schedule) CloudflareExpr() string {
-	if s.dowWildcard {
-		return s.src
-	}
-	prefix := s.src[:strings.LastIndexByte(s.src, ' ')+1]
-	var b strings.Builder
-	b.WriteString(prefix)
-	first := true
-	for d, ok := range s.dow {
-		if !ok {
-			continue
-		}
-		if !first {
-			b.WriteByte(',')
-		}
-		b.WriteString(strconv.Itoa(d + 1))
-		first = false
-	}
-	return b.String()
-}

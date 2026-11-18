@@ -194,28 +194,3 @@ func TestScheduleRunsPerDayMax(t *testing.T) {
 		})
 	}
 }
-
-func TestScheduleCloudflareExpr(t *testing.T) {
-	cases := []struct {
-		expr string
-		want string
-	}{
-		{expr: "0 9 * * 1-5", want: "0 9 * * 2,3,4,5,6"},
-		{expr: "*/15 * * * *", want: "*/15 * * * *"},
-		{expr: "0 0 * * */2", want: "0 0 * * 1,3,5,7"},
-		{expr: "0 3 * * 0", want: "0 3 * * 1"},
-		{expr: "  0   9  * *  5,1-3 ", want: "0 9 * * 2,3,4,6"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.expr, func(t *testing.T) {
-			s, err := ParseSchedule(tc.expr)
-			if err != nil {
-				t.Fatalf("ParseSchedule(%q): %v", tc.expr, err)
-			}
-			if got := s.CloudflareExpr(); got != tc.want {
-				t.Fatalf("CloudflareExpr() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}

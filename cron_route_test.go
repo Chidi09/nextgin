@@ -34,7 +34,6 @@ func TestDetectTarget(t *testing.T) {
 		{name: "default selfhost", want: TargetSelfhost},
 		{name: "explicit selfhost", targetEnv: "selfhost", want: TargetSelfhost},
 		{name: "explicit vercel", targetEnv: "vercel", want: TargetVercel},
-		{name: "explicit cloudflare", targetEnv: "cloudflare", want: TargetCloudflare},
 		{name: "explicit backend", targetEnv: "backend", want: TargetBackend},
 		{name: "vercel env", vercelEnv: "1", want: TargetVercel},
 		{name: "NEXTGIN_TARGET overrides VERCEL", targetEnv: "selfhost", vercelEnv: "1", want: TargetSelfhost},
@@ -248,7 +247,6 @@ func TestExport(t *testing.T) {
 	gotCron := exp.Crons[0]
 	if gotCron.Name != "weekday-report" ||
 		gotCron.Schedule != "0 9 * * 1-5" ||
-		gotCron.Cloudflare != "0 9 * * 2,3,4,5,6" ||
 		gotCron.Path != "/_nextgin/cron/weekday-report" ||
 		gotCron.RunsPerDayMax != 1 {
 		t.Fatalf("unexpected Cron export: %+v", gotCron)
@@ -424,14 +422,6 @@ func TestNewNonSelfhostAndExportSkipsDisk(t *testing.T) {
 		}
 		if err := app.Close(); err != nil {
 			t.Fatalf("Close() failed: %v", err)
-		}
-	})
-
-	t.Run("cloudflare target on non-wasm", func(t *testing.T) {
-		t.Setenv(TargetEnv, string(TargetCloudflare))
-		_, err := New("/nonexistent", Config{Router: NewRouter()})
-		if err == nil || !strings.Contains(err.Error(), "GOOS=js GOARCH=wasm") {
-			t.Fatalf("expected cloudflare wasm error, got %v", err)
 		}
 	})
 }

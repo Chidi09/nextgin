@@ -2,7 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { CF_COMPAT_DATE, generateBackendWrangler } from '../dist/cloudflare.js'
 import { detectTarget } from '../dist/targets.js'
 import {
   DOCKER_GENERATED_MARKER,
@@ -26,7 +25,6 @@ test('generateVercelSplitConfig builds rewrite and direct configs without crons 
       {
         name: 'cleanup',
         schedule: '*/5 * * * *',
-        cloudflare: '*/5 * * * *',
         path: '/_nextgin/cron/cleanup',
         runsPerDayMax: 288,
       },
@@ -56,8 +54,8 @@ test('generateVercelSplitConfig builds rewrite and direct configs without crons 
 })
 
 test('validateBackendUrl accepts valid origins and rejects invalid URLs', () => {
-  assert.equal(validateBackendUrl('https://api.shop.com', 'cloudflare'), 'https://api.shop.com')
-  assert.equal(validateBackendUrl('https://api.shop.com/', 'cloudflare'), 'https://api.shop.com')
+  assert.equal(validateBackendUrl('https://api.shop.com', 'container'), 'https://api.shop.com')
+  assert.equal(validateBackendUrl('https://api.shop.com/', 'container'), 'https://api.shop.com')
   assert.equal(validateBackendUrl('http://localhost:8080/', 'container'), 'http://localhost:8080')
   assert.equal(validateBackendUrl('http://127.0.0.1:8080', 'container'), 'http://127.0.0.1:8080')
 
@@ -70,26 +68,18 @@ test('validateBackendUrl accepts valid origins and rejects invalid URLs', () => 
   assert.throws(() => validateBackendUrl('https://user:pass@api.shop.com', 'container'), /must not include credentials/)
   assert.throws(() => validateBackendUrl('https://api.shop.com/#sec', 'container'), /must not include a hash/)
   assert.throws(() => validateBackendUrl('https://api.shop.com#', 'container'), /must not include a hash/)
-  assert.throws(
-    () => validateBackendUrl('https://my-worker.workers.dev', 'cloudflare'),
-    /backend-url must be a custom domain you own/,
-  )
-  assert.throws(
-    () => validateBackendUrl('https://api.shop.com:8443', 'cloudflare'),
-    /must not include a port for cloudflare/,
-  )
 })
 
 test('validateSplitFlags validates all flag combinations and defaults', () => {
   assert.deepStrictEqual(
     validateSplitFlags({
       'web-target': 'vercel',
-      'backend-target': 'cloudflare',
+      'backend-target': 'container',
       'backend-url': 'https://api.shop.com/',
     }),
     {
       webTarget: 'vercel',
-      backendTarget: 'cloudflare',
+      backendTarget: 'container',
       backendUrl: 'https://api.shop.com',
       backendHostname: 'api.shop.com',
       apiMode: 'direct',
@@ -150,7 +140,7 @@ test('validateSplitFlags validates all flag combinations and defaults', () => {
         'backend-target': 'fly',
         'backend-url': 'https://api.shop.com',
       }),
-    /--backend-target must be "cloudflare" or "container"/,
+    /--backend-target must be "container"/,
   )
 
   assert.throws(
@@ -200,48 +190,6 @@ ENTRYPOINT ["/server"]
   assert.equal(canOverwriteDockerfile(undefined), true)
   assert.equal(canOverwriteDockerfile(`${DOCKER_GENERATED_MARKER}\nFROM golang:1.25 AS build\n`), true)
   assert.equal(canOverwriteDockerfile('# custom dockerfile\nFROM golang:1.25 AS build\n'), false)
-})
-
-test('generateBackendWrangler supports customDomain and preserves default shape without it', () => {
-  const exp = {
-    version: 1,
-    routes: [{ method: 'GET', path: '/api/ping' }],
-    crons: [
-      {
-        name: 'cleanup',
-        schedule: '*/5 * * * *',
-        cloudflare: '*/5 * * * *',
-        path: '/_nextgin/cron/cleanup',
-        runsPerDayMax: 288,
-      },
-    ],
-  }
-
-  assert.deepStrictEqual(generateBackendWrangler(exp, { name: 'app' }), {
-    name: 'app-backend',
-    main: 'build/worker.mjs',
-    compatibility_date: CF_COMPAT_DATE,
-    workers_dev: false,
-    preview_urls: false,
-    triggers: {
-      crons: ['*/5 * * * *'],
-    },
-  })
-
-  assert.deepStrictEqual(
-    generateBackendWrangler(exp, { name: 'app', customDomain: 'api.shop.com' }),
-    {
-      name: 'app-backend',
-      main: 'build/worker.mjs',
-      compatibility_date: CF_COMPAT_DATE,
-      workers_dev: false,
-      preview_urls: false,
-      routes: [{ pattern: 'api.shop.com', custom_domain: true }],
-      triggers: {
-        crons: ['*/5 * * * *'],
-      },
-    },
-  )
 })
 
 test('detectTarget accepts backend', () => {

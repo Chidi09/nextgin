@@ -12,7 +12,6 @@ export interface ExportRoute {
 export interface ExportCron {
   name: string
   schedule: string
-  cloudflare: string
   path: string
   runsPerDayMax: number
 }

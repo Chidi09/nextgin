@@ -1,12 +1,12 @@
-export type Target = 'selfhost' | 'vercel' | 'cloudflare' | 'backend'
+export type Target = 'selfhost' | 'vercel' | 'backend'
 
-const VALID_TARGETS = new Set<string>(['selfhost', 'vercel', 'cloudflare', 'backend'])
+const VALID_TARGETS = new Set<string>(['selfhost', 'vercel', 'backend'])
 
 /**
  * Detects the active deployment target from environment variables.
  *
  * Precedence:
- * 1. `NEXTGIN_TARGET` if non-empty (must be `'selfhost' | 'vercel' | 'cloudflare' | 'backend'`).
+ * 1. `NEXTGIN_TARGET` if non-empty (must be `'selfhost' | 'vercel' | 'backend'`).
  * 2. `'vercel'` if `VERCEL === '1'`.
  * 3. `'selfhost'` otherwise.
  */

@@ -2,7 +2,7 @@ import type { NextginExport } from './export.js'
 import { goPrefixes } from './prefixes.js'
 
 export type WebTarget = 'vercel'
-export type BackendTarget = 'cloudflare' | 'container'
+export type BackendTarget = 'container'
 export type ApiMode = 'rewrite' | 'direct'
 
 export interface SplitOptions {
@@ -60,15 +60,6 @@ export function validateBackendUrl(rawUrl: unknown, backendTarget: BackendTarget
     throw new Error('--backend-url must not include a path')
   }
 
-  if (backendTarget === 'cloudflare') {
-    if (url.hostname.toLowerCase().endsWith('.workers.dev')) {
-      throw new Error('backend-url must be a custom domain you own')
-    }
-    if (url.port !== '') {
-      throw new Error('--backend-url must not include a port for cloudflare')
-    }
-  }
-
   return url.origin
 }
 
@@ -93,8 +84,8 @@ export function validateSplitFlags(flags: Record<string, string | boolean>): Spl
   }
 
   const backendTarget = flags['backend-target']
-  if (backendTarget !== 'cloudflare' && backendTarget !== 'container') {
-    throw new Error('--backend-target must be "cloudflare" or "container"')
+  if (backendTarget !== 'container') {
+    throw new Error('--backend-target must be "container"')
   }
 
   const backendUrl = validateBackendUrl(flags['backend-url'], backendTarget)

@@ -3,7 +3,6 @@ package nextgin
 import (
 	"fmt"
 	"os"
-	"runtime"
 )
 
 // TargetKind identifies the deployment target for a nextgin application.
@@ -14,8 +13,6 @@ const (
 	TargetSelfhost TargetKind = "selfhost"
 	// TargetVercel serves Go API routes only; Vercel handles Next.js and cron triggers.
 	TargetVercel TargetKind = "vercel"
-	// TargetCloudflare runs the Go backend as a Cloudflare Worker (js/wasm).
-	TargetCloudflare TargetKind = "cloudflare"
 	// TargetBackend runs an API-only Go server with the in-process cron scheduler and no Next.js frontend; the web app is deployed elsewhere.
 	TargetBackend TargetKind = "backend"
 )
@@ -32,15 +29,14 @@ const ExportEnv = "NEXTGIN_EXPORT"
 
 // ExportFileEnv, when set in export mode, names the file the export JSON is
 // written to instead of stdout. The CLI always sets it, so that anything else
-// the program prints (gin debug output, user logging) cannot corrupt the JSON.
+// the program prints cannot corrupt the JSON.
 const ExportFileEnv = "NEXTGIN_EXPORT_FILE"
 
-// DetectTarget determines the active deployment target from environment variables
-// and the build platform.
+// DetectTarget determines the active deployment target from environment variables.
 func DetectTarget() (TargetKind, error) {
 	if v := os.Getenv(TargetEnv); v != "" {
 		switch TargetKind(v) {
-		case TargetSelfhost, TargetVercel, TargetCloudflare, TargetBackend:
+		case TargetSelfhost, TargetVercel, TargetBackend:
 			return TargetKind(v), nil
 		default:
 			return "", fmt.Errorf("nextgin: unknown %s %q", TargetEnv, v)
@@ -48,9 +44,6 @@ func DetectTarget() (TargetKind, error) {
 	}
 	if os.Getenv("VERCEL") == "1" {
 		return TargetVercel, nil
-	}
-	if runtime.GOOS == "js" {
-		return TargetCloudflare, nil
 	}
 	return TargetSelfhost, nil
 }

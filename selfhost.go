@@ -1,5 +1,3 @@
-//go:build !js
-
 package nextgin
 
 import (
@@ -141,7 +139,7 @@ func initFrontend(dir string, cfg Config, target TargetKind) (*Frontend, error) 
 		// backend runs API-only with Next.js deployed elsewhere.
 		return nil, nil
 	default:
-		return nil, errors.New("nextgin: the cloudflare target requires GOOS=js GOARCH=wasm")
+		return nil, fmt.Errorf("nextgin: unsupported target %q", target)
 	}
 }
 

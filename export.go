@@ -21,7 +21,6 @@ type ExportRoute struct {
 type ExportCron struct {
 	Name          string `json:"name"`
 	Schedule      string `json:"schedule"`
-	Cloudflare    string `json:"cloudflare"`
 	Path          string `json:"path"`
 	RunsPerDayMax int    `json:"runsPerDayMax"`
 }
@@ -60,7 +59,6 @@ func (a *App) Export() Export {
 		crons = append(crons, ExportCron{
 			Name:          j.Name,
 			Schedule:      j.Schedule.String(),
-			Cloudflare:    j.Schedule.CloudflareExpr(),
 			Path:          j.Path,
 			RunsPerDayMax: j.Schedule.RunsPerDayMax(),
 		})

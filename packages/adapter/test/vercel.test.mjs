@@ -14,7 +14,7 @@ test('detectTarget handles all branches without mutating process.env', () => {
   assert.equal(detectTarget({ NEXTGIN_TARGET: '', VERCEL: '1' }), 'vercel')
   assert.equal(detectTarget({ NEXTGIN_TARGET: 'selfhost', VERCEL: '1' }), 'selfhost')
   assert.equal(detectTarget({ NEXTGIN_TARGET: 'vercel' }), 'vercel')
-  assert.equal(detectTarget({ NEXTGIN_TARGET: 'cloudflare' }), 'cloudflare')
+  assert.equal(detectTarget({ NEXTGIN_TARGET: 'backend' }), 'backend')
   assert.throws(() => detectTarget({ NEXTGIN_TARGET: 'fly' }), /nextgin: unknown NEXTGIN_TARGET "fly"/)
 })
 

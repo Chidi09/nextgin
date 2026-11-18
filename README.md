@@ -121,7 +121,6 @@ nextgin deploy --host root@203.0.113.7 --domain shop.example.com
 | Split (recommended) | `nextgin build --web-target vercel --backend-target container --backend-url https://api.example.com` | Next.js on Vercel, Go container on your host | Zero Vercel API/cron invocations; full DB pooling |
 | Self-host / VPS | `nextgin build` / `nextgin deploy` | One Go binary + Node/Bun workers | Go serves static/prerendered/API/crons natively |
 | Vercel (combined) | `nextgin build --target vercel` | Next.js + Go service both on Vercel | Generates root `vercel.json`; Hobby allows daily crons only (`--vercel-hobby`) |
-| Cloudflare (WASM) | `nextgin build --target cloudflare` or `--backend-target cloudflare` | Workers (Go compiled to `js/wasm`) | Paid plan required; no cross-request TCP pooling (`nextgin.DialContext`) |
 
 ## Security & Hardening Defaults
 
@@ -135,7 +134,6 @@ nextgin deploy --host root@203.0.113.7 --domain shop.example.com
 gofmt -l .
 go vet ./...
 go test -race -count=1 ./...
-GOOS=js GOARCH=wasm go build ./...
 (cd packages/adapter && npx tsc -p tsconfig.json && node --test test/)
 npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 ```
