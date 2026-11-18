@@ -10,12 +10,24 @@
 package nextgin
 
 import (
+	"context"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 )
+
+// CronLocker coordinates scheduled job execution across multiple instances or
+// rolling deploys (for example via Postgres advisory locks or Redis SET NX).
+// TryLock returns ok=true and an optional unlock callback when acquired.
+type CronLocker interface {
+	TryLock(ctx context.Context, jobName string, ttl time.Duration) (unlock func(), ok bool, err error)
+}
+
+// HealthPath is the built-in liveness route registered automatically by New.
+// Because it lives under /_nextgin/, it is excluded from App.Export routes.
+const HealthPath = "/_nextgin/health"
 
 // DevURLEnv points nextgin at a running `next dev` server. When set (as
 // `nextgin dev` does), no build output or workers are needed and every
@@ -55,8 +67,12 @@ type Config struct {
 	// ShutdownGrace bounds in-flight requests on Close. Default 10s.
 	ShutdownGrace time.Duration
 	// CronTimeout is the per-run timeout for scheduled jobs on the selfhost
-	// target. Default 5m.
+	// and backend targets. Default 5m.
 	CronTimeout time.Duration
+	// CronLocker is an optional distributed lock used by the in-process
+	// scheduler to prevent duplicate runs during rolling deploys or across
+	// replicas. When nil, only the in-process overlap guard is used.
+	CronLocker CronLocker
 	// ReadHeaderTimeout bounds reading request headers. Default 10s.
 	ReadHeaderTimeout time.Duration
 	// ReadTimeout bounds reading the entire request (headers + body).
@@ -114,6 +130,9 @@ func New(dir string, cfg Config) (*App, error) {
 		r = NewRouter()
 		r.Use(Recovery(cfg.loggerOrDefault()))
 	}
+	r.GET(HealthPath, func(w http.ResponseWriter, _ *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 	return &App{Router: r, Frontend: f, cfg: cfg, target: target}, nil
 }
 

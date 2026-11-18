@@ -63,8 +63,23 @@ func (a *App) startScheduler(ctx context.Context) func(timeout time.Duration) {
 					defer wg.Done()
 					defer running.Store(false)
 
-					runCtx, cancel := context.WithTimeout(context.Background(), timeout)
+					runCtx, cancel := context.WithTimeout(ctx, timeout)
 					defer cancel()
+
+					if a.cfg.CronLocker != nil {
+						unlock, ok, err := a.cfg.CronLocker.TryLock(runCtx, job.Name, timeout)
+						if err != nil {
+							log.Error("nextgin: cron lock failed", "name", job.Name, "err", err)
+							return
+						}
+						if !ok {
+							log.Info("nextgin: cron run skipped, lock held elsewhere", "name", job.Name)
+							return
+						}
+						if unlock != nil {
+							defer unlock()
+						}
+					}
 
 					start := schedulerNow()
 					status := a.invokeJob(runCtx, job)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -471,5 +472,157 @@ func TestExportToFile(t *testing.T) {
 	}
 	if len(got.Routes) != 1 || len(got.Crons) != 1 || got.Crons[0].Name != "nightly" {
 		t.Fatalf("unexpected export: %+v", got)
+	}
+}
+
+func TestSchedulerCancelsRunningJobOnShutdown(t *testing.T) {
+	origNow := schedulerNow
+	origNext := schedulerNext
+	t.Cleanup(func() {
+		schedulerNow = origNow
+		schedulerNext = origNext
+	})
+	schedulerNext = func(_ *Schedule, after time.Time) time.Time {
+		return after.Add(15 * time.Millisecond)
+	}
+
+	app := newTestApp()
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	app.Cron("cancellable", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-r.Context().Done()
+		close(canceled)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := app.startScheduler(ctx)
+
+	<-started
+	cancel()
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("running cron job did not receive shutdown context cancellation")
+	}
+	wait(time.Second)
+}
+
+type fakeCronLocker struct {
+	tryLock func(ctx context.Context, jobName string, ttl time.Duration) (func(), bool, error)
+}
+
+func (f fakeCronLocker) TryLock(ctx context.Context, jobName string, ttl time.Duration) (func(), bool, error) {
+	return f.tryLock(ctx, jobName, ttl)
+}
+
+func TestSchedulerCronLocker(t *testing.T) {
+	origNow := schedulerNow
+	origNext := schedulerNext
+	t.Cleanup(func() {
+		schedulerNow = origNow
+		schedulerNext = origNext
+	})
+	schedulerNext = func(_ *Schedule, after time.Time) time.Time {
+		return after.Add(20 * time.Millisecond)
+	}
+
+	t.Run("acquires and unlocks", func(t *testing.T) {
+		var unlocked atomic.Int32
+		var runs atomic.Int32
+		app := newTestApp()
+		app.cfg.CronLocker = fakeCronLocker{
+			tryLock: func(_ context.Context, name string, _ time.Duration) (func(), bool, error) {
+				if name != "locked" {
+					t.Errorf("jobName = %q, want locked", name)
+				}
+				return func() { unlocked.Add(1) }, true, nil
+			},
+		}
+		app.Cron("locked", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+			runs.Add(1)
+			w.WriteHeader(http.StatusOK)
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		wait := app.startScheduler(ctx)
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+		wait(time.Second)
+
+		if runs.Load() < 1 || unlocked.Load() != runs.Load() {
+			t.Fatalf("runs=%d unlocked=%d, want equal and >=1", runs.Load(), unlocked.Load())
+		}
+	})
+
+	t.Run("skips when contended or errored", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			ok   bool
+			err  error
+		}{
+			{"contended", false, nil},
+			{"error", false, errors.New("redis down")},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var runs atomic.Int32
+				app := newTestApp()
+				app.cfg.CronLocker = fakeCronLocker{
+					tryLock: func(_ context.Context, _ string, _ time.Duration) (func(), bool, error) {
+						return nil, tc.ok, tc.err
+					},
+				}
+				app.Cron("skipme", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+					runs.Add(1)
+					w.WriteHeader(http.StatusOK)
+				})
+
+				ctx, cancel := context.WithCancel(context.Background())
+				wait := app.startScheduler(ctx)
+				time.Sleep(70 * time.Millisecond)
+				cancel()
+				wait(time.Second)
+
+				if runs.Load() != 0 {
+					t.Fatalf("runs = %d, want 0", runs.Load())
+				}
+			})
+		}
+	})
+}
+
+func TestInvokeJobRecoversPanic(t *testing.T) {
+	app := newTestApp()
+	app.Cron("panicky", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+	if st := app.invokeJob(context.Background(), app.CronJobs()[0]); st != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", st)
+	}
+}
+
+func TestBuiltInHealthEndpoint(t *testing.T) {
+	t.Setenv(TargetEnv, string(TargetBackend))
+	app, err := New("/nonexistent", Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	app.Router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, HealthPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", HealthPath, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("body = %q, want status ok", rec.Body.String())
+	}
+	if got := app.Export().Routes; len(got) != 0 {
+		t.Fatalf("health route should not appear in Export().Routes, got %+v", got)
 	}
 }

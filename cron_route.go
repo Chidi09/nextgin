@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"sync"
 )
@@ -106,7 +107,7 @@ func constantTimeBearerMatch(header, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(header), []byte(expected)) == 1
 }
 
-func (a *App) invokeJob(ctx context.Context, job CronJob) int {
+func (a *App) invokeJob(ctx context.Context, job CronJob) (status int) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.Path, nil)
 	if err != nil {
 		return http.StatusInternalServerError
@@ -118,6 +119,16 @@ func (a *App) invokeJob(ctx context.Context, job CronJob) int {
 		header: make(http.Header),
 		status: http.StatusOK,
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			a.cfg.loggerOrDefault().Error("nextgin: cron job panicked",
+				"name", job.Name,
+				"panic", rec,
+				"stack", string(debug.Stack()),
+			)
+			status = http.StatusInternalServerError
+		}
+	}()
 	a.Router.ServeHTTP(w, req)
 	return w.status
 }
