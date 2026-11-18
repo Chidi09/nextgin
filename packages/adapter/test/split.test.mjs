@@ -92,7 +92,7 @@ test('validateSplitFlags validates all flag combinations and defaults', () => {
       backendTarget: 'cloudflare',
       backendUrl: 'https://api.shop.com',
       backendHostname: 'api.shop.com',
-      apiMode: 'rewrite',
+      apiMode: 'direct',
     },
   )
 
@@ -101,14 +101,14 @@ test('validateSplitFlags validates all flag combinations and defaults', () => {
       'web-target': 'vercel',
       'backend-target': 'container',
       'backend-url': 'http://localhost:8080/',
-      'api-mode': 'direct',
+      'api-mode': 'rewrite',
     }),
     {
       webTarget: 'vercel',
       backendTarget: 'container',
       backendUrl: 'http://localhost:8080',
       backendHostname: 'localhost',
-      apiMode: 'direct',
+      apiMode: 'rewrite',
     },
   )
 
@@ -170,7 +170,7 @@ test('validateSplitFlags validates all flag combinations and defaults', () => {
         'backend-url': 'https://api.shop.com',
         'api-mode': 'proxy',
       }),
-    /--api-mode must be "rewrite" or "direct"/,
+    /--api-mode must be "direct" or "rewrite"/,
   )
 })
 

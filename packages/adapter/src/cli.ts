@@ -26,10 +26,10 @@ import {
 } from './split.js'
 import { runDeploy } from './deploy/command.js'
 
-const HELP = `nextgin — Next.js on a Go/Gin front door
+const HELP = `nextgin — Next.js with a lightweight pure-Go API & cron backend
 
 Usage:
-  nextgin build [--target selfhost|vercel|cloudflare] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby] [--name app] [--no-web-build] [--no-go-build] [--go-tags nomsgpack] [--force]
+  nextgin build [--target selfhost|vercel|cloudflare] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby] [--name app] [--no-web-build] [--no-go-build] [--go-tags <tags>] [--force]
       selfhost (default): runs \`next build\` (with @nextgin/adapter), finalizes
       .nextgin/server and compiles the Go binary from the current directory.
       vercel: exports Go routes/crons and writes vercel.json (or verifies it
@@ -37,9 +37,9 @@ Usage:
       cloudflare: builds the Go/WASM backend worker and OpenNext web worker,
       generating wrangler.jsonc and nextgin-worker.mjs (--name, --no-web-build,
       --no-go-build, --force).
-      --go-tags <tags>: Go build tags for wasm (default: nomsgpack; --go-tags= for none).
+      --go-tags <tags>: optional Go build tags for wasm builds.
 
-  nextgin build --web-target vercel --backend-target <cloudflare|container> --backend-url <url> [--api-mode rewrite|direct] [--web web] [--backend backend] [--name app] [--force] [--no-go-build] [--go-tags nomsgpack] [--check]
+  nextgin build --web-target vercel --backend-target <cloudflare|container> --backend-url <url> [--api-mode direct|rewrite] [--web web] [--backend backend] [--name app] [--force] [--no-go-build] [--go-tags <tags>] [--check]
       Split topology (Next.js on Vercel, Go backend on its own host; writes <web>/vercel.json):
       --backend-target cloudflare: builds the Go/WASM worker with custom-domain wrangler.jsonc.
       --backend-target container: generates <backend>/Dockerfile (api-only backend target).
@@ -181,7 +181,7 @@ function buildCloudflare(flags: Flags) {
   const force = flags.force === true
   const noGoBuild = flags['go-build'] === false
   const noWebBuild = flags['web-build'] === false
-  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : 'nomsgpack'
+  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : ''
 
   let exp: ReturnType<typeof runExport>
   let prefixes: string[]
@@ -269,7 +269,7 @@ function buildSplit(flags: Flags) {
   const force = flags.force === true
   const check = flags.check === true
   const noGoBuild = flags['go-build'] === false
-  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : 'nomsgpack'
+  const goTags = typeof flags['go-tags'] === 'string' ? flags['go-tags'] : ''
 
   let exp: ReturnType<typeof runExport>
   let name: string

@@ -101,10 +101,10 @@ export function validateSplitFlags(flags: Record<string, string | boolean>): Spl
   const backendHostname = new URL(backendUrl).hostname
 
   const rawApiMode = flags['api-mode']
-  let apiMode: ApiMode = 'rewrite'
+  let apiMode: ApiMode = 'direct'
   if (rawApiMode !== undefined) {
     if (rawApiMode !== 'rewrite' && rawApiMode !== 'direct') {
-      throw new Error('--api-mode must be "rewrite" or "direct"')
+      throw new Error('--api-mode must be "direct" or "rewrite"')
     }
     apiMode = rawApiMode
   }

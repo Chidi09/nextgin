@@ -357,10 +357,9 @@ WORKDIR /app
 COPY --chown=node:node server /app/server
 COPY --chown=node:node .nextgin /app/.nextgin
 ENV PORT=8080
-ENV GIN_MODE=release
 USER node
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD node -e "fetch('http://127.0.0.1:8080/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD node -e "fetch('http://127.0.0.1:8080/_nextgin/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/app/server"]
 `
   assert.equal(generateDockerfile(), expected)
