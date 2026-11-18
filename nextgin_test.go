@@ -480,6 +480,46 @@ func TestRouterMountStatusAndStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	if time.Since(start) > 300*time.Millisecond {
-		t.Fatal("streaming buffered behind Gin")
+		t.Fatal("streaming buffered behind Router")
 	}
+}
+
+func TestNewHTTPServerTimeouts(t *testing.T) {
+	t.Run("backend target gets API timeouts", func(t *testing.T) {
+		a := &App{Router: NewRouter(), target: TargetBackend}
+		srv := a.newHTTPServer(":8080")
+		if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 15*time.Second ||
+			srv.WriteTimeout != 30*time.Second || srv.IdleTimeout != 60*time.Second {
+			t.Fatalf("unexpected backend timeouts: %+v", srv)
+		}
+	})
+
+	t.Run("selfhost keeps WriteTimeout disabled for streaming", func(t *testing.T) {
+		a := &App{Router: NewRouter(), target: TargetSelfhost}
+		srv := a.newHTTPServer(":8080")
+		if srv.ReadHeaderTimeout != 10*time.Second || srv.IdleTimeout != 60*time.Second {
+			t.Fatalf("unexpected selfhost header/idle timeouts: %+v", srv)
+		}
+		if srv.ReadTimeout != 0 || srv.WriteTimeout != 0 {
+			t.Fatalf("expected 0 ReadTimeout/WriteTimeout on selfhost, got %v/%v", srv.ReadTimeout, srv.WriteTimeout)
+		}
+	})
+
+	t.Run("explicit config overrides defaults", func(t *testing.T) {
+		a := &App{
+			Router: NewRouter(),
+			target: TargetBackend,
+			cfg: Config{
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       20 * time.Second,
+				WriteTimeout:      45 * time.Second,
+				IdleTimeout:       90 * time.Second,
+			},
+		}
+		srv := a.newHTTPServer(":8080")
+		if srv.ReadHeaderTimeout != 5*time.Second || srv.ReadTimeout != 20*time.Second ||
+			srv.WriteTimeout != 45*time.Second || srv.IdleTimeout != 90*time.Second {
+			t.Fatalf("unexpected overridden timeouts: %+v", srv)
+		}
+	})
 }

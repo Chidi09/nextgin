@@ -162,11 +162,7 @@ func (a *App) runTarget(addr string) error {
 		waitScheduler = a.startScheduler(ctx)
 	}
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           a.Router,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := a.newHTTPServer(addr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -199,6 +195,35 @@ func (a *App) runTarget(addr string) error {
 		err = cerr
 	}
 	return err
+}
+
+func (a *App) newHTTPServer(addr string) *http.Server {
+	readHeaderTimeout := a.cfg.ReadHeaderTimeout
+	if readHeaderTimeout <= 0 {
+		readHeaderTimeout = 10 * time.Second
+	}
+	idleTimeout := a.cfg.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 60 * time.Second
+	}
+	readTimeout := a.cfg.ReadTimeout
+	writeTimeout := a.cfg.WriteTimeout
+	if a.target == TargetBackend || a.target == TargetVercel {
+		if readTimeout <= 0 {
+			readTimeout = 15 * time.Second
+		}
+		if writeTimeout <= 0 {
+			writeTimeout = 30 * time.Second
+		}
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           a.Router,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 }
 
 func displayAddr(addr string) string {

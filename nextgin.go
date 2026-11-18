@@ -57,6 +57,17 @@ type Config struct {
 	// CronTimeout is the per-run timeout for scheduled jobs on the selfhost
 	// target. Default 5m.
 	CronTimeout time.Duration
+	// ReadHeaderTimeout bounds reading request headers. Default 10s.
+	ReadHeaderTimeout time.Duration
+	// ReadTimeout bounds reading the entire request (headers + body).
+	// Default 15s on backend/vercel targets; 0 (disabled) on selfhost.
+	ReadTimeout time.Duration
+	// WriteTimeout bounds writing the response.
+	// Default 30s on backend/vercel targets; 0 (disabled) on selfhost so SSR
+	// streaming is not interrupted.
+	WriteTimeout time.Duration
+	// IdleTimeout bounds idle keep-alive connections. Default 60s.
+	IdleTimeout time.Duration
 	// Env is extra environment for workers ("KEY=value").
 	Env []string
 	// Port is passed to workers as PORT, used by Next.js for self-referencing

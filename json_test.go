@@ -2,6 +2,7 @@ package nextgin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +63,60 @@ func TestReadJSON(t *testing.T) {
 		var body map[string]any
 		if err := ReadJSON(req, &body); err == nil {
 			t.Fatal("expected error for empty body, got nil")
+		}
+	})
+
+	t.Run("trailing data rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"a":1}{"b":2}`))
+		var body map[string]int
+		if err := ReadJSON(req, &body); err == nil {
+			t.Fatal("expected error for trailing JSON value, got nil")
+		}
+	})
+
+	t.Run("oversized JSON body returns ErrBodyTooLarge", func(t *testing.T) {
+		payload := `{"data":"` + strings.Repeat("a", 64) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+		rec := httptest.NewRecorder()
+		var body map[string]string
+		err := ReadJSONLimit(rec, req, &body, 32)
+		if !errors.Is(err, ErrBodyTooLarge) {
+			t.Fatalf("err = %v, want ErrBodyTooLarge", err)
+		}
+		var maxErr *http.MaxBytesError
+		if !errors.As(err, &maxErr) {
+			t.Fatalf("expected *http.MaxBytesError in chain, got %v", err)
+		}
+	})
+}
+
+func TestReadRawBody(t *testing.T) {
+	t.Run("reads exact bytes", func(t *testing.T) {
+		raw := `{"event":"charge.success","amount":5000}`
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/paystack", strings.NewReader(raw))
+		rec := httptest.NewRecorder()
+		got, err := ReadRawBody(rec, req, 1024)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(got) != raw {
+			t.Fatalf("got %q, want %q", got, raw)
+		}
+	})
+
+	t.Run("rejects oversized body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(strings.Repeat("x", 100)))
+		rec := httptest.NewRecorder()
+		_, err := ReadRawBody(rec, req, 32)
+		if !errors.Is(err, ErrBodyTooLarge) {
+			t.Fatalf("err = %v, want ErrBodyTooLarge", err)
+		}
+	})
+
+	t.Run("empty body rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
+		if _, err := ReadRawBody(nil, req, 64); err == nil {
+			t.Fatal("expected error for http.NoBody")
 		}
 	})
 }
