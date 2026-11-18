@@ -468,7 +468,7 @@ split `vercel.json`; Docker build of the emitted Dockerfile.
 
 ## 10. `nextgin deploy` (single VPS, everything included)
 
-Status: implemented; verified with `--local` on this machine (§10.10), not yet against a real VPS over SSH. Goal: `nextgin deploy` takes a project to a running VPS with
+Status: implemented; verified with `--local` (§10.10) and over real SSH into a Debian 12 target container (§10.11); not yet on a real internet-facing VPS. Goal: `nextgin deploy` takes a project to a running VPS with
 no hand-written Docker, proxy or env files. The app runs in **self-host mode**
 (Go front door + Node workers, §4.1), not the API-only `backend` target.
 Postgres and Redis are created on the server and wired into the app's env
@@ -655,3 +655,29 @@ Not verified: a real SSH deploy (the host had no sshd and no passwordless
 sudo), Docker installation on a fresh VPS, arm64 targets, apps with native
 `.node` modules, `--reconfigure` end to end, large `.nextgin` trees with
 symlinks, Let's Encrypt issuance.
+
+### 10.11 Verified over SSH (2026-11-18)
+
+Target: a `debian:12` container with `openssh-server`, run `--privileged` with a
+tmpfs `/var/lib/docker` on this machine, reached as `127.0.0.1:2222`. No Docker
+installed beforehand, and no systemd. Key auth only (`--identity`).
+- Non-root user with passwordless sudo: the OS check passed, Docker was
+  installed by `get.docker.com`, the image was uploaded with `sudo -n docker
+  load`, and the stack came up. `/api/dbcheck` incremented Postgres and Redis,
+  prerendered and SSR pages returned 200, `.env` is mode 600, Postgres and Redis
+  publish no host ports, and `nextgin.deploy.json` holds host, name and ssh port
+  only.
+- Redeploy with only `--identity` (host, name and port read from the saved
+  config): `.env` hash and the Postgres/Redis container ids unchanged, counters
+  continued (2 -> 3), the previous image kept.
+- `root@`: plain `docker` (no sudo), a second stack on another port, healthy.
+- Bug found by this run and fixed: if the remote `docker load` failed (daemon not
+  running), ssh exited while the local `docker save` blocked forever writing into
+  a pipe nobody read, so the CLI hung without an error. The upload now fails at
+  once with ssh's error; regression test `test/transport-load.test.mjs` (fails
+  with a 15 s hang without the fix).
+- Not covered by this run: a systemd host (the daemon was started by hand,
+  because the container has no init system, so the installer's service start is
+  unproven), arm64, a real network, firewalls, Let's Encrypt, and a first-time
+  host-key prompt (BatchMode is on: the host key must already be in
+  `known_hosts`, so connect once with plain `ssh` first).
