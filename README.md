@@ -1,20 +1,94 @@
-# nextgin
+<div align="center">
 
-Run a Next.js app with a **pure-Go (`net/http`) API and cron backend** — zero web-framework overhead (~7.5 MB native binary) — and deploy it either as a lightweight split sidecar (`Vercel web + Go container`) or all-in-one on your own VPS (`nextgin deploy`).
+<a href="https://next-gin.dev">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg" />
+    <img alt="nextgin logo" src="docs/assets/logo-light.svg" width="76" height="76" />
+  </picture>
+</a>
 
-- **Pure Go `net/http` router:** `Router` wraps Go 1.22+ `http.ServeMux` with `Group`, `With`, `Middleware`, panic recovery, JSON/raw-body helpers (`ReadJSON`, `ReadRawBody`, `WriteJSON`), per-IP `RateLimit`, and secure `SetSessionCookie` / `ClearSessionCookie`.
-- **Crons are routes:** `app.Cron("name", "*/5 * * * *", handler)` registers `/_nextgin/cron/<name>` and runs in-process on `backend` / `selfhost` (no Vercel Hobby daily-cron limits), with graceful shutdown cancellation and an optional `CronLocker` hook for rolling deploys.
-- **Go is the front door on self-host:** Serves static assets, prerendered pages, `next.config` headers/redirects, and your API routes natively, proxying only dynamic pages (SSR, RSC, Server Actions) to Node/Bun workers.
-- **Built-in liveness probe:** `GET /_nextgin/health` answers `200 {"status":"ok"}` without touching Next.js or appearing in exported API routes.
+<h1>nextgin</h1>
 
-Status: pre-release (`0.1.0`), private repository, not published to npm. Details and measurements: [docs/SPEC.md](docs/SPEC.md).
+<p>
+  <strong>Next.js App Router on the frontend. Pure-Go (<code>net/http</code>) API &amp; cron backend.</strong>
+</p>
 
-## Recommended: Split Topology (Next.js on Vercel + Tiny Go API/Cron Container)
+<p>
+  Zero external Go dependencies &middot; ~7.5 MB native binary &middot; Deploy split or all-in-one
+</p>
 
-Keep Next.js on Vercel for UI/SSR while a tiny distroless Go container (on Fly.io, Cloud Run, Railway, or a $4–5/mo VPS) handles auth, cart, payments, webhooks, and sub-minute crons:
+<p>
+  <a href="https://pkg.go.dev/github.com/Chidi09/nextgin"><img src="https://pkg.go.dev/badge/github.com/Chidi09/nextgin.svg" alt="Go Reference" /></a>
+  <a href="https://www.npmjs.com/package/@nextgin/adapter"><img src="https://img.shields.io/npm/v/%40nextgin%2Fadapter?label=%40nextgin%2Fadapter&color=00ADD8" alt="npm version" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black" alt="MIT License" /></a>
+</p>
+
+<p>
+  <a href="https://next-gin.dev">Website</a> &middot;
+  <a href="https://next-gin.dev/docs">Docs</a> &middot;
+  <a href="docs/PATTERNS.md">Architecture Patterns</a> &middot;
+  <a href="docs/COOKBOOK.md">Cookbook</a> &middot;
+  <a href="examples/">Examples</a>
+</p>
+
+</div>
+
+---
+
+## Why nextgin?
+
+Keep Next.js focused on what it does best — **UI, SSR, RSC, and Server Actions** — while a tiny, zero-dependency Go binary owns your **hot path and background jobs**: auth, sessions, rate limiting, payments, webhooks, and sub-minute crons.
+
+- **Zero external Go dependencies:** Built purely on Go 1.22+ `net/http.ServeMux` with `Group`, `With`, `Middleware`, panic recovery, JSON/raw-body helpers (`ReadJSON`, `ReadRawBody`, `WriteJSON`), per-IP `RateLimit`, and secure `SetSessionCookie` / `ClearSessionCookie`.
+- **Crons are authenticated HTTP routes:** `app.Cron("name", "*/5 * * * *", handler)` registers `/_nextgin/cron/<name>` behind fail-closed auth and runs in-process on `backend` / `selfhost` (no daily-cron limits), with graceful `SIGTERM` cancellation and an optional `CronLocker` hook for multi-replica deploys.
+- **One codebase, any topology:** Ship as a split stack (Next.js on Vercel or Cloudflare Pages + Go container on Cloudflare Containers, Fly.io, Cloud Run, Railway, or a VPS) or self-host everything behind a single Go binary (`nextgin deploy`).
+- **Go is the front door on self-host:** Serves static assets, prerendered pages, `next.config` headers/redirects, and API routes natively, proxying only dynamic SSR/RSC/Server Action requests to Node or Bun workers over Unix sockets.
+- **Built-in liveness probe:** `GET /_nextgin/health` responds `200 {"status":"ok"}` without touching Next.js or polluting exported routes.
+
+---
+
+## Quick Start
+
+Scaffold a new project with a clean 3-layer Go layout (`internal/domain`, `store`, `service`, `httpapi`) and a typed Next.js API client (`lib/api.ts`):
+
+```bash
+# Single-repo self-host layout
+npx @nextgin/adapter init my-app
+
+# Split layout (web/ + backend/) for Vercel / Cloudflare Pages + Go container
+npx @nextgin/adapter init my-app --layout split
+```
+
+Or add `nextgin` to an existing Next.js app:
+
+```bash
+go get github.com/Chidi09/nextgin
+npm install @nextgin/adapter
+```
+
+```js
+// next.config.mjs
+import { createNextGinAdapter } from '@nextgin/adapter'
+
+export default {
+  adapterPath: createNextGinAdapter(),
+}
+```
+
+Run locally with live reload for both Next.js and Go:
+
+```bash
+nextgin dev     # Next.js dev server + Go backend with auto-restart on .go changes
+nextgin build   # next build, finalize .nextgin manifest, go build -o server
+./server
+```
+
+---
+
+## A Complete Go Backend in One File
 
 ```go
-// backend/main.go
 package main
 
 import (
@@ -33,7 +107,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Browser calls https://api.example.com directly (default --api-mode direct).
 	app.Router.Use(nextgin.CORS("https://example.com"))
 
 	api := app.Router.Group("/api")
@@ -47,7 +120,7 @@ func main() {
 			nextgin.WriteError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		// Verify credentials, issue session token...
+		// Verify credentials and issue a session token...
 		nextgin.SetSessionCookie(w, "sid", "token", nextgin.CookieOptions{
 			Domain: ".example.com", MaxAge: 7 * 86400,
 		})
@@ -59,83 +132,69 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Read raw bytes first so HMAC webhook signatures verify cleanly.
 	api.POST("/webhooks/pay", func(w http.ResponseWriter, r *http.Request) {
 		raw, err := nextgin.ReadRawBody(w, r, 256<<10)
 		if err != nil {
 			nextgin.WriteError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		_ = raw // verify HMAC signature with your payment provider
+		_ = raw // verify signature with your payment provider
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Unlimited crons — runs in Go, zero Vercel Cron invocations.
+	// Unlimited crons — runs in-process in Go, cancelled cleanly on SIGTERM.
 	app.Cron("expire-carts", "* * * * *", func(w http.ResponseWriter, r *http.Request) {
-		// r.Context() is cancelled on SIGTERM for graceful shutdown.
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	app.MountFrontend() // no-op on NEXTGIN_TARGET=backend
+	app.MountFrontend() // no-op when NEXTGIN_TARGET=backend
 	log.Fatal(app.Run(":" + os.Getenv("PORT")))
 }
 ```
 
-Build the split config (`web/vercel.json` + `backend/Dockerfile`):
+---
 
-```bash
-nextgin build --web-target vercel --backend-target container --backend-url https://api.example.com
-```
+## Deployment Targets
 
-- `--api-mode direct` (default): `web/vercel.json` has no external rewrites; the browser calls `NEXT_PUBLIC_NEXTGIN_API_URL` directly so API traffic bypasses Vercel compute/bandwidth. Use `nextgin.CORS(...)` and parent-domain cookies (`Domain: ".example.com"`).
-- `--api-mode rewrite`: opt-in same-origin mode that writes external rewrites into `web/vercel.json`.
-- Protect server-to-server routes called from Next.js SSR/Server Actions with `nextgin.RequireInternal()` and `NEXTGIN_INTERNAL_SECRET`.
-- For rolling deploys or multiple replicas, plug a Postgres advisory lock or Redis `SET NX` into `Config.CronLocker` (or set `NEXTGIN_SCHEDULER=off` on replicas).
-
-## Quick start (self-host / VPS)
-
-Scaffold a new project with the 3-layer Go architecture (`internal/domain`, `store`, `service`, `httpapi`) and Next.js `lib/api.ts`:
-
-```bash
-npx @nextgin/adapter init my-app                  # single-repo selfhost layout
-npx @nextgin/adapter init my-app --layout split   # web/ + backend/ split layout
-```
-
-Or add the adapter to an existing Next.js app:
-
-```js
-// next.config.mjs
-import { createNextGinAdapter } from '@nextgin/adapter'
-export default { adapterPath: createNextGinAdapter() }
-```
-
-```bash
-nextgin build   # next build, finalize .nextgin, go build -o server
-./server
-nextgin dev     # next dev + Go server with restart on .go changes
-```
-
-Or ship everything (Go + Node workers + Postgres/Redis + Caddy HTTPS) to a single VPS:
-
-```bash
-nextgin deploy --host root@203.0.113.7 --domain shop.example.com
-```
-
-- **Databases:** Postgres and Redis are detected from `go.mod`. First deploy asks once per service whether to run it on the server (Enter = yes) or use an external URL; secrets are generated once into `/opt/nextgin/<name>/.env` (mode 600) and preserved across redeploys.
-- **Local / dry-run:** `nextgin deploy --local` runs on the current machine; `--dry-run` previews generated files in `.nextgin/deploy/`.
-
-## All Deployment Targets
-
-| Mode | Command | Where things run | Notes |
+| Target | Command | Where it runs | Best for |
 |---|---|---|---|
-| Split (recommended) | `nextgin build --web-target vercel --backend-target container --backend-url https://api.example.com` | Next.js on Vercel, Go container on your host | Zero Vercel API/cron invocations; full DB pooling |
-| Self-host / VPS | `nextgin build` / `nextgin deploy` | One Go binary + Node/Bun workers | Go serves static/prerendered/API/crons natively |
-| Vercel (combined) | `nextgin build --target vercel` | Next.js + Go service both on Vercel | Generates root `vercel.json`; Hobby allows daily crons only (`--vercel-hobby`) |
+| **Split (Recommended)** | `nextgin build --web-target vercel --backend-target container --backend-url https://api.example.com` | Next.js on Vercel / Cloudflare Pages + Go container on Cloudflare Containers, Fly.io, Cloud Run, Railway, or VPS | Zero serverless API/cron invocations, full DB connection pooling, sub-minute crons |
+| **Self-Host / VPS** | `nextgin deploy --host root@203.0.113.7 --domain shop.example.com` | Single VPS with Go binary + Node/Bun workers + Postgres/Redis + Caddy HTTPS | Predictable flat-rate hosting with one-command SSH deploys |
+| **Vercel (Combined)** | `nextgin build --target vercel` | Next.js + Go service both on Vercel | Single-dashboard deploys (pass `--vercel-hobby` for daily crons) |
+
+### Split Mode Notes
+- `--api-mode direct` *(default)*: The browser calls `NEXT_PUBLIC_NEXTGIN_API_URL` directly so API traffic bypasses frontend bandwidth/compute. Pair with `nextgin.CORS(...)` and parent-domain cookies (`Domain: ".example.com"`).
+- `--api-mode rewrite`: Opt-in same-origin mode that writes external rewrites into `web/vercel.json`.
+- Protect server-to-server routes called from SSR or Server Actions with `nextgin.RequireInternal()` and `NEXTGIN_INTERNAL_SECRET`.
+- For multi-replica deploys, plug a Postgres advisory lock or Redis `SET NX` into `Config.CronLocker` (or set `NEXTGIN_SCHEDULER=off` on replicas).
+
+### Single-VPS Deploy Notes
+- Postgres and Redis are auto-detected from `go.mod`. First deploy prompts once per service to either provision it on the VPS or use an external URL; generated secrets live in `/opt/nextgin/<name>/.env` (`0600`) and persist across redeploys.
+- Use `nextgin deploy --local` to run locally, or `--dry-run` to inspect generated files in `.nextgin/deploy/`.
+
+---
 
 ## Security & Hardening Defaults
 
-- **Body limits:** `ReadJSON` caps reads at 1 MiB (`DefaultMaxBodyBytes`) and rejects trailing data; use `ReadJSONLimit` or `ReadRawBody` for custom caps.
-- **Server timeouts:** `backend`/`vercel` targets default to `ReadHeaderTimeout: 10s`, `ReadTimeout: 15s`, `WriteTimeout: 30s`, `IdleTimeout: 60s` (`selfhost` leaves `WriteTimeout: 0` so SSR streaming is never cut off).
-- **Fail-closed auth:** Cron routes require the process-internal bearer token or `CRON_SECRET`; `RequireInternal` rejects all traffic when `NEXTGIN_INTERNAL_SECRET` is unset; `CORS` panics on empty or `*` allow-lists.
+- **Strict body limits:** `ReadJSON` caps request bodies at 1 MiB (`DefaultMaxBodyBytes`) and rejects trailing JSON tokens. Use `ReadJSONLimit` or `ReadRawBody` for custom limits and HMAC webhooks.
+- **Streaming-safe timeouts:** `backend` and `vercel` targets enforce `ReadHeaderTimeout: 10s`, `ReadTimeout: 15s`, `WriteTimeout: 30s`, `IdleTimeout: 60s`. `selfhost` keeps `WriteTimeout: 0` so Next.js Suspense and SSE streams are never cut off.
+- **Fail-closed by default:** Cron routes require the process-internal bearer token or `CRON_SECRET`; `RequireInternal` returns `401` whenever `NEXTGIN_INTERNAL_SECRET` is unset; `CORS` panics on empty or `*` origins; `SetSessionCookie` defaults to `HttpOnly: true`, `Secure: true`, `SameSite: Lax`.
+
+---
+
+## Examples & Documentation
+
+| Resource | Description |
+|---|---|
+| [examples/fullstack-app](examples/fullstack-app) | Minimal Next.js App Router + Go API, SSR, Server Actions, and end-to-end test suite |
+| [examples/ecommerce-app](examples/ecommerce-app) | Full SQLite store with auth, rate limiting, cart, transactional checkout, HMAC webhook, and 1-minute cart-expiry cron |
+| [docs/PATTERNS.md](docs/PATTERNS.md) | App folder structure, `httpapi → service → store` layering, error mapping, middleware, and Next.js ↔ Go client boundary |
+| [docs/COOKBOOK.md](docs/COOKBOOK.md) | Deployment topologies, database/ORM ownership (`sqlc`), auth, webhooks, and distributed cron locking |
+| [docs/SPEC.md](docs/SPEC.md) | Architecture specification, design decisions, and benchmarks |
+| [AGENTS.md](AGENTS.md) | Contributor and AI coding agent guide |
+
+---
 
 ## Development
 
@@ -147,4 +206,6 @@ go test -race -count=1 ./...
 npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 ```
 
-[docs/PATTERNS.md](docs/PATTERNS.md) covers app folder structure, separation of concerns (`httpapi → service → store`), API/error patterns, middleware, and the Next.js ↔ Go client boundary. [docs/COOKBOOK.md](docs/COOKBOOK.md) covers deployment topology, database/ORM choices, auth, webhooks, and cron locking. [AGENTS.md](AGENTS.md) is the contributor & AI-agent guide. [docs/SPEC.md](docs/SPEC.md) is the design record.
+## License
+
+[MIT](LICENSE)
