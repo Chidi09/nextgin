@@ -1,8 +1,27 @@
 {
   "name": "@nextgin/adapter",
   "version": "0.1.0",
-  "description": "Next.js deployment adapter that emits a manifest + headless UDS worker for the nextgin Go/Gin runtime",
+  "description": "Next.js build adapter and CLI for the zero-dependency pure-Go nextgin runtime",
+  "homepage": "https://next-gin.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chidi09/nextgin.git",
+    "directory": "packages/adapter"
+  },
+  "keywords": [
+    "nextgin",
+    "nextjs",
+    "go",
+    "golang",
+    "adapter",
+    "selfhost",
+    "vercel",
+    "cron"
+  ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,7 +33,7 @@
     "./adapter": "./dist/adapter.js"
   },
   "bin": {
-    "nextgin": "./dist/cli.js"
+    "nextgin": "dist/cli.js"
   },
   "files": [
     "dist",
