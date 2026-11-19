@@ -2,54 +2,15 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
-
-type Product = {
-  id: number
-  slug: string
-  name: string
-  category: string
-  priceCents: number
-  stock: number
-  description: string
-  badge?: string
-}
-
-type User = { email: string; name: string } | null
-
-type CartItem = {
-  productId: number
-  name: string
-  priceCents: number
-  qty: number
-}
-
-type Cart = {
-  items: CartItem[]
-  totalCents: number
-}
-
-type Order = {
-  id: string
-  userEmail: string
-  items: CartItem[]
-  totalCents: number
-  status: 'pending' | 'paid'
-  createdAt: string
-  paidAt?: string
-}
-
-type CronStats = {
-  ticks: number
-  expiredCarts: number
-  lastRunAt?: string
-}
+import { ApiError, apiFetch } from '@/lib/api'
+import type { Cart, CronStats, Order, Product, User } from '@/lib/types'
 
 const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`
 
 export default function Storefront() {
   const [products, setProducts] = useState<Product[]>([])
   const [category, setCategory] = useState('All')
-  const [user, setUser] = useState<User>(null)
+  const [user, setUser] = useState<User | null>(null)
   const [cart, setCart] = useState<Cart>({ items: [], totalCents: 0 })
   const [orders, setOrders] = useState<Order[]>([])
   const [cron, setCron] = useState<CronStats>({ ticks: 0, expiredCarts: 0 })
@@ -59,25 +20,24 @@ export default function Storefront() {
   const [busy, setBusy] = useState(false)
 
   const refreshAll = useCallback(async () => {
-    const [pRes, meRes, cRes, oRes, crRes] = await Promise.all([
-      fetch('/api/products'),
-      fetch('/api/auth/me'),
-      fetch('/api/cart'),
-      fetch('/api/orders'),
-      fetch('/api/cron/stats'),
+    const [prods, me, c, ords, cr] = await Promise.all([
+      apiFetch<Product[]>('/api/products'),
+      apiFetch<{ user: User | null }>('/api/auth/me'),
+      apiFetch<Cart>('/api/cart'),
+      apiFetch<Order[]>('/api/orders'),
+      apiFetch<CronStats>('/api/cron/stats'),
     ])
-    if (pRes.ok) setProducts(await pRes.json())
-    if (meRes.ok) setUser((await meRes.json()).user)
-    if (cRes.ok) setCart(await cRes.json())
-    if (oRes.ok) setOrders(await oRes.json())
-    if (crRes.ok) setCron(await crRes.json())
+    setProducts(prods)
+    setUser(me.user)
+    setCart(c)
+    setOrders(ords)
+    setCron(cr)
   }, [])
 
   useEffect(() => {
     void refreshAll()
-    const id = setInterval(async () => {
-      const r = await fetch('/api/cron/stats')
-      if (r.ok) setCron(await r.json())
+    const id = setInterval(() => {
+      void apiFetch<CronStats>('/api/cron/stats').then(setCron).catch(() => {})
     }, 10000)
     return () => clearInterval(id)
   }, [refreshAll])
@@ -87,26 +47,22 @@ export default function Storefront() {
     setBusy(true)
     setNotice('')
     try {
-      const res = await fetch('/api/auth/login', {
+      const signedIn = await apiFetch<User>('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
-      const data = await res.json()
-      if (!res.ok) {
-        setNotice(data.error || 'Login failed')
-        return
-      }
-      setUser(data)
-      setNotice(`Signed in as ${data.email} (HttpOnly session cookie set by Go)`)
+      setUser(signedIn)
+      setNotice(`Signed in as ${signedIn.email} (HttpOnly session cookie set by Go)`)
       await refreshAll()
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : 'Login failed')
     } finally {
       setBusy(false)
     }
   }
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' })
+    await apiFetch<void>('/api/auth/logout', { method: 'POST' })
     setUser(null)
     setOrders([])
     setNotice('Signed out (session cookie cleared)')
@@ -114,48 +70,42 @@ export default function Storefront() {
   }
 
   async function addToCart(productId: number) {
-    const res = await fetch('/api/cart/items', {
+    const updated = await apiFetch<Cart>('/api/cart/items', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ productId, qty: 1 }),
     })
-    if (res.ok) setCart(await res.json())
+    setCart(updated)
   }
 
   async function setQty(productId: number, qty: number) {
-    const res = await fetch(`/api/cart/items/${productId}`, {
+    const updated = await apiFetch<Cart>(`/api/cart/items/${productId}`, {
       method: qty <= 0 ? 'DELETE' : 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: qty <= 0 ? undefined : JSON.stringify({ qty }),
     })
-    if (res.ok) setCart(await res.json())
+    setCart(updated)
   }
 
   async function checkout() {
     setBusy(true)
     setNotice('')
     try {
-      const res = await fetch('/api/checkout', { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) {
-        setNotice(data.error || 'Checkout failed')
-        return
-      }
-      setNotice(`Order ${data.id} created (${fmt(data.totalCents)}). Click "Simulate Payment Webhook" to pay it via HMAC.`)
+      const order = await apiFetch<Order>('/api/checkout', { method: 'POST' })
+      setNotice(`Order ${order.id} created (${fmt(order.totalCents)}). Click "Simulate Payment Webhook" to pay it via HMAC.`)
       await refreshAll()
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : 'Checkout failed')
     } finally {
       setBusy(false)
     }
   }
 
   async function simulatePayment(orderId: string) {
-    const res = await fetch(`/api/demo/simulate-payment/${orderId}`, { method: 'POST' })
-    const data = await res.json()
-    if (res.ok) {
-      setNotice(`Webhook verified (HMAC-SHA256): Order ${data.id} is now PAID`)
+    try {
+      const paid = await apiFetch<Order>(`/api/demo/simulate-payment/${orderId}`, { method: 'POST' })
+      setNotice(`Webhook verified (HMAC-SHA256): Order ${paid.id} is now PAID`)
       await refreshAll()
-    } else {
-      setNotice(data.error || 'Webhook failed')
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : 'Webhook failed')
     }
   }
 

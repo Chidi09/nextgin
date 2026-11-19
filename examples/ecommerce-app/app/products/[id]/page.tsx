@@ -1,22 +1,21 @@
 import Link from 'next/link'
+import { internalFetch } from '@/lib/api'
+import type { Product } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
-
-type Product = {
-  id: number
-  name: string
-  category: string
-  priceCents: number
-  stock: number
-  description: string
-}
 
 export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const apiBase = process.env.NEXTGIN_INTERNAL_URL || 'http://127.0.0.1:8080'
-  const res = await fetch(`${apiBase}/api/products/${id}`, { cache: 'no-store' })
 
-  if (!res.ok) {
+  let product: Product | null = null
+  try {
+    product = await internalFetch<Product>(`/api/products/${id}`)
+  } catch {
+    product = null
+  }
+
+  if (!product) {
     return (
       <main className="container" style={{ padding: '48px 20px' }}>
         <h1>Product not found</h1>
@@ -27,7 +26,6 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
     )
   }
 
-  const product: Product = await res.json()
   return (
     <main className="container" style={{ padding: '40px 20px', maxWidth: 720 }}>
       <Link href="/" className="pill">← Back to store</Link>

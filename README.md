@@ -138,4 +138,4 @@ go test -race -count=1 ./...
 npm run build -w fullstack-app && scripts/e2e.sh node && scripts/e2e.sh bun
 ```
 
-[docs/COOKBOOK.md](docs/COOKBOOK.md) covers architecture, database/ORM patterns, auth, webhooks, and cron locking. [AGENTS.md](AGENTS.md) is the contributor & AI-agent guide. [docs/SPEC.md](docs/SPEC.md) is the design record.
+[docs/PATTERNS.md](docs/PATTERNS.md) covers app folder structure, separation of concerns (`httpapi → service → store`), API/error patterns, middleware, and the Next.js ↔ Go client boundary. [docs/COOKBOOK.md](docs/COOKBOOK.md) covers deployment topology, database/ORM choices, auth, webhooks, and cron locking. [AGENTS.md](AGENTS.md) is the contributor & AI-agent guide. [docs/SPEC.md](docs/SPEC.md) is the design record.

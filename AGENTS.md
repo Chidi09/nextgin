@@ -64,6 +64,7 @@ npm run build -w fullstack-app && scripts/e2e.sh node
 
 ## Conventions & Pitfalls
 
+- **App architecture & separation of concerns:** When scaffolding or growing user apps on `nextgin`, keep `main.go` thin (wiring only) and separate `internal/httpapi` (HTTP/DTOs/validation), `internal/service` (business logic & transactions), `internal/store` (SQL), and `internal/domain` (types & sentinel errors). Map domain errors centrally instead of leaking raw SQL errors; centralize Next.js fetches in `lib/api.ts`. See [docs/PATTERNS.md](docs/PATTERNS.md).
 - **Route patterns:** Use Go 1.22+ `{param}` syntax (e.g. `api.PATCH("/cart/items/{id}", ...)` and `r.PathValue("id")`), not `:param`.
 - **Payment webhooks:** Always use `nextgin.ReadRawBody(w, r, limit)` before verifying HMAC signatures; never pass webhook payloads through `ReadJSON` first.
 - **No `api/` directory at project root:** Vercel treats top-level `api/` as legacy serverless functions. Use `web/` + `backend/` for multi-target repos.

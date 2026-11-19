@@ -1,6 +1,6 @@
 # nextgin Cookbook & Best Practices
 
-Practical architectural patterns and copy-paste recipes for building fast, low-cost apps with Next.js + pure-Go `nextgin`.
+Practical recipes for deploying and hardening apps with Next.js + pure-Go `nextgin`. For application folder layout, separation of concerns (`httpapi → service → store`), handler/error patterns, and the Next.js ↔ Go client boundary, see [docs/PATTERNS.md](PATTERNS.md).
 
 ---
 
