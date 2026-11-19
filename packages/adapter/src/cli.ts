@@ -16,10 +16,15 @@ import {
 } from './split.js'
 import { runDeploy } from './deploy/command.js'
 import { validateName } from './deploy/config.js'
+import { scaffoldProject, type InitLayout } from './init.js'
 
 const HELP = `nextgin — Next.js with a lightweight pure-Go API & cron backend
 
 Usage:
+  nextgin init [dir] [--layout selfhost|split] [--name app] [--module example.com/app] [--force]
+      Scaffolds a new nextgin project with clean separation of concerns
+      (internal/domain, store, service, httpapi + Next.js lib/api.ts + AGENTS.md).
+
   nextgin build [--target selfhost|vercel] [--out-dir .nextgin] [--go-out server] [--no-go] [--web web] [--backend backend] [--check] [--vercel-hobby]
       selfhost (default): runs \`next build\` (with @nextgin/adapter), finalizes
       .nextgin/server and compiles the Go binary from the current directory.
@@ -330,9 +335,56 @@ function dev(flags: Flags) {
   startGo()
 }
 
+function firstPositional(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a.startsWith('--')) {
+      const k = a.slice(2)
+      if (!k.includes('=') && !k.startsWith('no-') && k !== 'force' && argv[i + 1] && !argv[i + 1].startsWith('--')) {
+        i++
+      }
+      continue
+    }
+    return a
+  }
+  return undefined
+}
+
+function initCmd(args: string[], flags: Flags) {
+  const positional = firstPositional(args)
+  const targetDir = positional ? path.resolve(cwd, positional) : cwd
+  const layout = typeof flags.layout === 'string' ? (flags.layout as InitLayout) : 'selfhost'
+  try {
+    const res = scaffoldProject({
+      targetDir,
+      layout,
+      name: typeof flags.name === 'string' ? flags.name : undefined,
+      modulePath: typeof flags.module === 'string' ? flags.module : undefined,
+      force: flags.force === true,
+    })
+    console.log(`[nextgin] scaffolded ${res.layout} project "${res.name}" in ${res.targetDir} (${res.files.length} files)`)
+    if (res.layout === 'split') {
+      console.log('Next steps:')
+      console.log(`  cd ${path.relative(cwd, res.targetDir) || '.'}`)
+      console.log('  (cd backend && go mod tidy && go test ./...)')
+      console.log('  (cd web && npm install && npm run dev)')
+    } else {
+      console.log('Next steps:')
+      console.log(`  cd ${path.relative(cwd, res.targetDir) || '.'}`)
+      console.log('  go mod tidy && go test ./...')
+      console.log('  npm install && npx nextgin dev')
+    }
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+}
+
 const [cmd, ...rest] = process.argv.slice(2)
 const flags = parseFlags(rest)
 switch (cmd) {
+  case 'init':
+    initCmd(rest, flags)
+    break
   case 'build':
     build(flags)
     break

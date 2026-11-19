@@ -93,6 +93,15 @@ nextgin build --web-target vercel --backend-target container --backend-url https
 
 ## Quick start (self-host / VPS)
 
+Scaffold a new project with the 3-layer Go architecture (`internal/domain`, `store`, `service`, `httpapi`) and Next.js `lib/api.ts`:
+
+```bash
+npx @nextgin/adapter init my-app                  # single-repo selfhost layout
+npx @nextgin/adapter init my-app --layout split   # web/ + backend/ split layout
+```
+
+Or add the adapter to an existing Next.js app:
+
 ```js
 // next.config.mjs
 import { createNextGinAdapter } from '@nextgin/adapter'
