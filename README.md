@@ -173,6 +173,14 @@ func main() {
 - Postgres and Redis are auto-detected from `go.mod`. First deploy prompts once per service to either provision it on the VPS or use an external URL; generated secrets live in `/opt/nextgin/<name>/.env` (`0600`) and persist across redeploys.
 - Use `nextgin deploy --local` to run locally, or `--dry-run` to inspect generated files in `.nextgin/deploy/`.
 
+### Cloudflare (Pages + Containers)
+You can also run the entire stack on Cloudflare (this is how `next-gin.dev` itself is deployed):
+- **Backend (`NEXTGIN_TARGET=backend`):** Cross-compile a stripped `linux/amd64` Go binary (~7.5 MB) into a minimal Alpine image and deploy it to **Cloudflare Containers** (`instance_type: "lite"`, 256 MiB) behind a custom domain (`api.example.com`).
+- **Frontend:** Deploy the Next.js app to **Cloudflare Pages**, either calling `https://api.example.com` directly or proxying `/api/*` through a Pages Function (`functions/api/[[path]].js`) to `NEXTGIN_BACKEND_URL`.
+- **Crons:** Wire Cloudflare Worker `triggers.crons` to `POST /_nextgin/cron/<name>` with `Authorization: Bearer $CRON_SECRET` so scheduled jobs wake the container reliably even when it sleeps.
+
+See the full copy-pasteable `Dockerfile`, `wrangler.jsonc`, and Worker wrapper in [docs/COOKBOOK.md](docs/COOKBOOK.md#7-deploying-on-cloudflare-pages--containers).
+
 ---
 
 ## Security & Hardening Defaults

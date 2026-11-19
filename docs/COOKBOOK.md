@@ -11,6 +11,7 @@ Pick **one** of these two production layouts:
 | Pattern | Best For | Hosting |
 |---|---|---|
 | **Split (`--web-target vercel --backend-target container`)** | Keeping Next.js on Vercel Hobby/Pro while moving auth, cart, payments, webhooks, and crons off Vercel. | Next.js on Vercel + tiny Go container on Fly.io / Cloud Run / Railway / $5 VPS. |
+| **Cloudflare (Pages + Containers)** | Running both Next.js and the native Go binary on Cloudflare with zero cold-start Node API bloat. | Next.js on Cloudflare Pages + Go binary on Cloudflare Containers + Cron Triggers. |
 | **All-in-One VPS (`nextgin deploy`)** | Zero platform limits, zero cross-origin cookie setup, lowest flat monthly cost. | Single $5–10/mo VPS running Go front door + Node workers + Postgres/Redis + Caddy HTTPS. |
 
 ### Why Split Defaults to `--api-mode direct`
@@ -199,9 +200,149 @@ When Next.js Server Components or Server Actions need private data from Go:
 
 ---
 
-## 7. Production Checklist
+## 7. Deploying on Cloudflare (Pages + Containers)
 
-- [ ] **Reverse proxy:** Set `Config.TrustForwardedHeaders: true` when behind Caddy, Nginx, Fly.io, or Cloud Run (leave `false` if exposed directly to the internet).
+Because `NEXTGIN_TARGET=backend` runs your pure-Go API and cron routes as a standalone ~7.5 MB HTTP server (with `app.MountFrontend()` as a no-op), it fits cleanly inside a `lite` (256 MiB) **Cloudflare Container** while your Next.js frontend lives on **Cloudflare Pages**.
+
+### 1. Build the Linux/AMD64 Go Binary
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o cf-backend/bin/server .
+```
+
+### 2. Minimal Container `Dockerfile` (`cf-backend/Dockerfile`)
+
+```dockerfile
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY bin/server /app/server
+RUN chmod +x /app/server
+ENV NEXTGIN_TARGET=backend \
+    PORT=8080 \
+    TRUST_PROXY=1
+EXPOSE 8080
+CMD ["/app/server"]
+```
+
+### 3. Wrangler Config (`cf-backend/wrangler.jsonc`)
+
+```jsonc
+{
+  "name": "my-app-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "NextginGoBackend",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 2
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "NEXTGIN_GO", "class_name": "NextginGoBackend" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["NextginGoBackend"] }
+  ],
+  "routes": [
+    { "pattern": "api.example.com", "custom_domain": true }
+  ],
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
+}
+```
+
+### 4. Worker Entry + Cron Trigger (`cf-backend/src/index.ts`)
+
+Cloudflare Containers can sleep after idle periods (`sleepAfter`). Forwarding Worker Cron Triggers to `nextgin`'s authenticated `/_nextgin/cron/<name>` route guarantees your jobs run even when the container is asleep:
+
+```ts
+import { Container, getContainer } from '@cloudflare/containers'
+
+interface Env {
+  NEXTGIN_GO: DurableObjectNamespace<NextginGoBackend>
+  CRON_SECRET?: string
+}
+
+export class NextginGoBackend extends Container<Env> {
+  defaultPort = 8080
+  sleepAfter = '15m'
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    this.envVars = {
+      NEXTGIN_TARGET: 'backend',
+      PORT: '8080',
+      TRUST_PROXY: '1',
+      ...(env.CRON_SECRET ? { CRON_SECRET: env.CRON_SECRET } : {}),
+    }
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return getContainer(env.NEXTGIN_GO, 'primary').fetch(request)
+  },
+
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    const headers: Record<string, string> = {}
+    if (env.CRON_SECRET) {
+      headers['Authorization'] = `Bearer ${env.CRON_SECRET}`
+    }
+    await getContainer(env.NEXTGIN_GO, 'primary').fetch(
+      new Request('http://container/_nextgin/cron/expire-carts', {
+        method: 'POST',
+        headers,
+      }),
+    )
+  },
+}
+```
+
+Deploy the Go container backend:
+
+```bash
+cd cf-backend
+npx wrangler secret put CRON_SECRET   # optional, matches CRON_SECRET in Go
+npx wrangler deploy
+```
+
+### 5. Connect the Next.js Frontend on Cloudflare Pages
+
+You have two options for routing `/api/*` from Cloudflare Pages to your Go container:
+
+- **Direct subdomain (recommended for high traffic):** Point `NEXT_PUBLIC_NEXTGIN_API_URL=https://api.example.com`, add `nextgin.CORS("https://example.com")`, and set `Domain: ".example.com"` on session cookies.
+- **Same-origin Pages Function proxy:** Add `functions/api/[[path]].js` in your Pages project and set `NEXTGIN_BACKEND_URL=https://api.example.com` in Cloudflare Pages environment variables:
+
+```js
+// functions/api/[[path]].js
+export async function onRequest(context) {
+  const backend = context.env.NEXTGIN_BACKEND_URL
+  if (!backend) {
+    return new Response(JSON.stringify({ error: 'NEXTGIN_BACKEND_URL not set' }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const incoming = new URL(context.request.url)
+  const target = new URL(incoming.pathname + incoming.search, backend)
+  return fetch(new Request(target.toString(), context.request))
+}
+```
+
+> **Note:** Cloudflare Containers requires the Cloudflare Workers Paid plan.
+
+---
+
+## 8. Production Checklist
+
+- [ ] **Reverse proxy:** Set `Config.TrustForwardedHeaders: true` when behind Caddy, Nginx, Cloudflare, Fly.io, or Cloud Run (leave `false` if exposed directly to the internet).
 - [ ] **Healthcheck:** Point Docker / Fly.io / Cloud Run / Load Balancer probes at `GET /_nextgin/health`.
 - [ ] **Cookies:** Leave `CookieOptions.Insecure: false` in production (HTTPS).
 - [ ] **Secrets:** Set `CRON_SECRET` (if triggering crons externally) and `NEXTGIN_INTERNAL_SECRET` (for `/internal/*` routes).
